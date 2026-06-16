@@ -69,12 +69,20 @@ function Card({ r }) {
           <div style={{ fontSize: 13, color: "#444", marginBottom: 12 }}>{r.descricao}</div>
           <div style={{ display: "flex", gap: 8 }}>
             {r.download_direto ? (
-              <a href={r.link} download style={{
-                padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500,
-                background: "#e6f4ed", color: "#1a7a4a", textDecoration: "none"
-              }}>
-                ↓ Baixar agora
-              </a>
+              <>
+                <a href={r.link} download style={{
+                  padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500,
+                  background: "#e6f4ed", color: "#1a7a4a", textDecoration: "none"
+                }}>
+                  ↓ Baixar agora
+                </a>
+                <a href={r.link} target="_blank" rel="noreferrer" style={{
+                  padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500,
+                  background: "#eee", color: "#333", textDecoration: "none"
+                }}>
+                  Ver site ↗
+                </a>
+              </>
             ) : (
               <a href={r.link} target="_blank" rel="noreferrer" style={{
                 padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500,
