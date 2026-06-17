@@ -43,7 +43,6 @@ function Tags({ r }) {
     <div style={{ display: "flex", flexWrap: "wrap", gap: 5, margin: "8px 0" }}>
       {r.fonte_confiavel  && <Tag cor="green"  texto="✓ Fonte conhecida" />}
       {r.download_direto  && <Tag cor="green"  texto="↓ Download direto" />}
-      {!r.download_direto && r.tem_download && <Tag cor="blue" texto="↓ Tem download" />}
       {r.youtube          && <Tag cor="purple" texto="▶ YouTube" />}
       {r.streaming        && <Tag cor="purple" texto="▶ Streaming" />}
       {r.encurtador       && <Tag cor="orange" texto="⚠ Encurtador" />}
