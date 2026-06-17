@@ -21,8 +21,22 @@ SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 WHITELIST = [
     "archive.org", "mediafire.com", "mega.nz", "drive.google.com",
     "pixeldrain.com", "gofile.io", "sendspace.com", "itch.io",
-    "workupload.com", "1fichier.com", "github.com", "sourceforge.net"
+    "workupload.com", "1fichier.com", "sourceforge.net"
 ]
+
+# Sites que o usuário pode mencionar explicitamente na busca
+SITES_MENCIONAVEIS = {
+    "youtube":    ["youtube.com", "youtu.be"],
+    "archive":    ["archive.org"],
+    "mega":       ["mega.nz"],
+    "mediafire":  ["mediafire.com"],
+    "drive":      ["drive.google.com"],
+    "gdrive":     ["drive.google.com"],
+    "github":     ["github.com"],
+    "itch":       ["itch.io"],
+    "pixeldrain": ["pixeldrain.com"],
+    "gofile":     ["gofile.io"],
+}
 
 EXTENSOES_DIRETAS = [
     ".exe", ".zip", ".rar", ".7z", ".tar", ".gz",
@@ -44,8 +58,23 @@ STREAMING = [
     "adorocinema.com", "filmow.com", "letterboxd.com", "imdb.com"
 ]
 
+# Studios e sites de filmes que não têm download
+STUDIOS_BLOQUEADOS = [
+    "disney.com", "movies.disney.com", "pixar.com",
+    "warnerbros.com", "universalpictures.com", "sonypictures.com",
+    "marvel.com", "starwars.com", "dreamworks.com",
+    "paramountpictures.com", "mgm.com", "lionsgatefilms.com"
+]
+
 BLOQUEADOS = [
     "play.google.com",
+]
+
+# Padrões de URL inúteis — páginas de comentários, perfis, etc.
+URL_INUTILS = [
+    "/comments", "/discussion", "/reviews", "/forum",
+    "/profile", "/user/", "/community", "?after=", "?before=",
+    "/blog/", "/news/", "/about", "/contact"
 ]
 
 AD_SCRIPTS = [
@@ -63,20 +92,34 @@ PALAVRAS_DOWNLOAD_HTML = [
 ]
 
 PALAVRAS_TRAILER   = ["trailer", "teaser", "making of", "featurette"]
-PALAVRAS_DOCUMENTO = ["artigo", "article", "research", "journal", "paper", "tese", "dissertation"]
+PALAVRAS_DOCUMENTO = ["artigo", "article", "research", "journal", "paper", "tese"]
 
-# Tipos de conteúdo de vídeo — GitHub não serve para isso
-TIPOS_VIDEO = ["filme", "movie", "film", "anime", "animação", "animacao",
-               "serie", "série", "episodio", "episódio", "temporada",
-               "dublado", "legendado", "assistir"]
+TIPOS_VIDEO = [
+    "filme", "movie", "film", "anime", "animação", "animacao",
+    "serie", "série", "episodio", "episódio", "temporada",
+    "dublado", "legendado", "assistir", "cartoon", "animacao"
+]
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
 
 def extrair_dominio(url):
     try:
         return urlparse(url).netloc.replace("www.", "")
     except:
         return ""
+
+def detectar_site_mencionado(query_lower):
+    """Retorna lista de domínios que o usuário mencionou explicitamente."""
+    mencionados = []
+    for keyword, dominios in SITES_MENCIONAVEIS.items():
+        if keyword in query_lower:
+            mencionados.extend(dominios)
+    return mencionados
+
+def e_url_inutil(url):
+    url_lower = url.lower()
+    return any(p in url_lower for p in URL_INUTILS)
 
 def e_url_documento(url):
     url_lower = url.lower()
@@ -96,6 +139,9 @@ def e_streaming(dominio):
 def e_youtube(dominio):
     return "youtube.com" in dominio or "youtu.be" in dominio
 
+def e_studio(dominio):
+    return any(s in dominio for s in STUDIOS_BLOQUEADOS)
+
 def e_bloqueado(dominio, url):
     return any(b in dominio or b in url for b in BLOQUEADOS)
 
@@ -108,7 +154,7 @@ def e_github(dominio):
 def e_trailer(titulo, descricao, query_lower):
     if "trailer" in query_lower:
         return False
-    return any(p in (titulo + descricao).lower() for p in PALAVRAS_TRAILER)
+    return any(p in (titulo + " " + descricao).lower() for p in PALAVRAS_TRAILER)
 
 def e_documento_irrelevante(titulo, descricao, url, query_lower):
     if any(p in query_lower for p in ["pdf", "artigo", "paper", "epub", "livro", "ebook", "manga", "mangá"]):
@@ -120,7 +166,12 @@ def quer_video(query_lower):
     return any(p in query_lower for p in TIPOS_VIDEO)
 
 def contar_relevancia(query, texto):
-    palavras = [p for p in query.lower().split() if len(p) > 2]
+    # Remove palavras de site da query para não contar "youtube" como palavra de conteúdo
+    stop = list(SITES_MENCIONAVEIS.keys()) + ["download", "baixar", "filme", "anime", "game", "jogo"]
+    palavras = [p for p in query.lower().split() if len(p) > 2 and p not in stop]
+    if not palavras:
+        # Se só tinha stop words, usa todas
+        palavras = [p for p in query.lower().split() if len(p) > 2]
     if not palavras:
         return 0
     texto_lower = texto.lower()
@@ -156,18 +207,17 @@ def analisar_pagina(url, e_reddit_url=False):
         palavras = [p for p in PALAVRAS_DOWNLOAD_HTML if p in html]
         tem_download = len(palavras) >= 2
 
-        # Reddit: verifica se há link externo de download nos comentários
         reddit_tem_link = False
         if e_reddit_url:
-            dominios_download = ["mega.nz", "mediafire.com", "drive.google.com",
-                                 "pixeldrain.com", "gofile.io", "1fichier.com"]
-            reddit_tem_link = any(d in html for d in dominios_download)
+            dominios_dl = ["mega.nz", "mediafire.com", "drive.google.com",
+                           "pixeldrain.com", "gofile.io", "1fichier.com"]
+            reddit_tem_link = any(d in html for d in dominios_dl)
 
         return propaganda, tem_download, reddit_tem_link
     except:
         return "desconhecido", False, False
 
-def calcular_score(r, query, query_lower):
+def calcular_score(r, query, query_lower, sites_mencionados, busca_video):
     score = 30
 
     titulo_desc = r["titulo"] + " " + r["descricao"]
@@ -176,9 +226,16 @@ def calcular_score(r, query, query_lower):
     # Relevância é o fator principal
     score += int(relevancia * 35)
 
-    # Fonte confiável
-    if r["fonte_confiavel"] and not r["github_video"]:
-        score += 18
+    # ── BOOST por site mencionado explicitamente ──
+    # Se o usuário pediu um site específico, esse site vai ao topo
+    if sites_mencionados and r["dominio_limpo"] in sites_mencionados:
+        score += 40   # boost forte — usuário pediu esse site
+    elif sites_mencionados:
+        score -= 10   # outros sites caem um pouco quando um foi pedido
+
+    # Fonte confiável (whitelist) — só conta se não for busca de vídeo no github
+    if r["fonte_confiavel"]:
+        score += 15
 
     # Download direto
     if r["download_direto"]:
@@ -190,25 +247,35 @@ def calcular_score(r, query, query_lower):
     elif r["propaganda"] == "agressivo":
         score -= 8
 
-    # YouTube: bônus se relevância boa, penalidade leve se baixa
+    # YouTube
     if r["youtube"]:
-        if relevancia >= 0.5:
-            score += 10
+        if "youtube" in sites_mencionados or "youtu.be" in sites_mencionados:
+            pass  # já ganhou o boost de 40 acima
+        elif relevancia >= 0.5:
+            score += 12   # tem o conteúdo certo
         else:
             score -= 5
 
-    # Reddit: baixo por padrão, sobe se tiver link de download
+    # Reddit
     if r["reddit"]:
         if r["reddit_tem_link"]:
             score += 5
         else:
-            score -= 20
+            score -= 25
 
     # GitHub para vídeo não faz sentido
     if r["github_video"]:
         score -= 30
 
-    # Penalidades
+    # Studio — site de estúdio não tem download
+    if r["studio"]:
+        score -= 40
+
+    # URL inútil (comentários, perfis)
+    if r["url_inutil"]:
+        score -= 40
+
+    # Penalidades gerais
     if r["streaming"]:   score -= 25
     if r["trailer"]:     score -= 20
     if r["documento"]:   score -= 30
@@ -217,27 +284,30 @@ def calcular_score(r, query, query_lower):
 
     return max(0, min(score, 100))
 
-def processar_item(item, query, query_lower, quer_pdf, busca_video):
+def processar_item(item, query, query_lower, quer_pdf, busca_video, sites_mencionados):
     link      = item.get("link", "")
     titulo    = item.get("title", "")
     descricao = item.get("snippet", "")
     dominio   = extrair_dominio(link)
 
-    youtube     = e_youtube(dominio)
-    streaming   = e_streaming(dominio) and not youtube
-    encurtador  = e_encurtador(dominio)
-    bloqueado   = e_bloqueado(dominio, link)
-    trailer     = e_trailer(titulo, descricao, query_lower)
-    documento   = e_documento_irrelevante(titulo, descricao, link, query_lower)
-    reddit      = e_reddit(dominio)
-    github      = e_github(dominio)
+    youtube    = e_youtube(dominio)
+    streaming  = e_streaming(dominio) and not youtube
+    encurtador = e_encurtador(dominio)
+    bloqueado  = e_bloqueado(dominio, link)
+    studio     = e_studio(dominio)
+    trailer    = e_trailer(titulo, descricao, query_lower)
+    documento  = e_documento_irrelevante(titulo, descricao, link, query_lower)
+    reddit     = e_reddit(dominio)
+    github     = e_github(dominio)
     github_video = github and busca_video
+    url_inutil = e_url_inutil(link)
 
-    download_direto   = tem_extensao_direta(link, quer_pdf)
-    propaganda        = "desconhecido"
-    reddit_tem_link   = False
+    download_direto = tem_extensao_direta(link, quer_pdf)
+    propaganda      = "desconhecido"
+    reddit_tem_link = False
 
-    if not streaming and not youtube and not bloqueado:
+    # Não analisa páginas inúteis, studios ou bloqueados
+    if not streaming and not youtube and not bloqueado and not studio and not url_inutil:
         if not download_direto:
             download_direto = verificar_head(link)
         propaganda, _, reddit_tem_link = analisar_pagina(link, e_reddit_url=reddit)
@@ -255,32 +325,48 @@ def processar_item(item, query, query_lower, quer_pdf, busca_video):
         "streaming":       streaming,
         "trailer":         trailer,
         "documento":       documento,
-        "bloqueado":       bloqueado,
+        "bloqueado":       bloqueado or studio,
         "reddit":          reddit,
         "reddit_tem_link": reddit_tem_link,
         "github_video":    github_video,
+        "url_inutil":      url_inutil,
+        "studio":          studio,
         "propaganda":      propaganda,
     }
 
-    resultado["score"] = calcular_score(resultado, query, query_lower)
+    resultado["score"] = calcular_score(resultado, query, query_lower, sites_mencionados, busca_video)
     return resultado
 
 @app.get("/buscar")
 def buscar(q: str):
-    query_lower = q.lower()
-    quer_pdf    = "pdf" in query_lower
-    busca_video = quer_video(query_lower)
+    query_lower      = q.lower()
+    quer_pdf         = "pdf" in query_lower
+    busca_video      = quer_video(query_lower)
+    sites_mencionados = detectar_site_mencionado(query_lower)
 
-    excluir = "-site:spotify.com -site:netflix.com -site:play.google.com -site:reddit.com"
+    # Monta exclusões para busca geral
+    excluir = (
+        "-site:spotify.com -site:netflix.com -site:play.google.com "
+        "-site:disney.com -site:pixar.com -site:imdb.com "
+        "-site:adorocinema.com -site:filmow.com"
+    )
 
     queries = [
         # Sites de hospedagem diretos
-        f'"{q}" site:drive.google.com OR site:mega.nz OR site:mediafire.com OR site:pixeldrain.com OR site:gofile.io OR site:archive.org OR site:itch.io',
-        # X/Twitter: pessoas compartilham links
+        (
+            f'"{q}" site:drive.google.com OR site:mega.nz OR site:mediafire.com '
+            f'OR site:pixeldrain.com OR site:gofile.io OR site:archive.org OR site:itch.io'
+        ),
+        # X: pessoas compartilham links
         f'"{q}" download OR baixar site:x.com',
-        # Busca geral sem streaming e sem reddit
-        f'{q} download OR baixar {excluir}'
+        # Busca geral sem ruído
+        f'{q} download OR baixar {excluir}',
     ]
+
+    # Se o usuário pediu um site específico, adiciona uma busca direcionada
+    if sites_mencionados:
+        site_query = " OR ".join(f"site:{s}" for s in sites_mencionados)
+        queries.insert(0, f'"{q}" {site_query}')
 
     itens_brutos = []
     links_vistos = set()
@@ -306,7 +392,7 @@ def buscar(q: str):
     with ThreadPoolExecutor(max_workers=8) as executor:
         futuros = {
             executor.submit(
-                processar_item, item, q, query_lower, quer_pdf, busca_video
+                processar_item, item, q, query_lower, quer_pdf, busca_video, sites_mencionados
             ): item
             for item in itens_brutos
         }
