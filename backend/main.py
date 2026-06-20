@@ -9,17 +9,9 @@ from datetime import datetime
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Carrega as chaves do arquivo .env
 load_dotenv()
-SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
 
-app = FastAPI(
-    title="Atchload API - Completa",
-    description="Backend Integrado: Busca Inteligente + Motor de Segurança",
-    version="2.0.0"
-)
-
+app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,12 +19,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Configurações
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
 NOME_BANCO = "atchload.db"
 
-
-# MÓDULO DE SEGURANÇA E BANCO DE DADOS
-
-
+# MÓDULO DE SEGURANÇA 
 def inicializar_banco():
     conexao = sqlite3.connect(NOME_BANCO)
     cursor = conexao.cursor()
@@ -40,10 +32,6 @@ def inicializar_banco():
     CREATE TABLE IF NOT EXISTS historico_seguranca (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         alvo TEXT UNIQUE,
-        tipo TEXT,
-        harmless INTEGER,
-        suspicious INTEGER,
-        malicious INTEGER,
         tag_atchload TEXT,
         data_consulta TEXT
     )
@@ -54,20 +42,17 @@ def inicializar_banco():
 def buscar_cache_local(url: str):
     conexao = sqlite3.connect(NOME_BANCO)
     cursor = conexao.cursor()
-    cursor.execute("SELECT tag_atchload, harmless, suspicious, malicious, data_consulta FROM historico_seguranca WHERE alvo = ?", (url,))
+    cursor.execute("SELECT tag_atchload FROM historico_seguranca WHERE alvo = ?", (url,))
     resultado = cursor.fetchone()
     conexao.close()
-    return resultado
+    return resultado[0] if resultado else "Aguardando Análise"
 
-def salvar_no_banco(url: str, harmless: int, suspicious: int, malicious: int, tag: str):
+def salvar_no_banco(url: str, tag: str):
     conexao = sqlite3.connect(NOME_BANCO)
     cursor = conexao.cursor()
     data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("""
-    INSERT OR REPLACE INTO historico_seguranca 
-    (alvo, tipo, harmless, suspicious, malicious, tag_atchload, data_consulta)
-    VALUES (?, 'url', ?, ?, ?, ?, ?)
-    """, (url, harmless, suspicious, malicious, tag, data_atual))
+    cursor.execute("INSERT OR REPLACE INTO historico_seguranca (alvo, tag_atchload, data_consulta) VALUES (?, ?, ?)", 
+                   (url, tag, data_atual))
     conexao.commit()
     conexao.close()
 
@@ -81,109 +66,76 @@ def calcular_tag_atchload(malicious: int, suspicious: int) -> str:
 
 inicializar_banco()
 
-
-# MÓDULO DE BUSCA 
-
-
+#  MÓDULO DE BUSCA  
 WHITELIST = ["archive.org", "mediafire.com", "mega.nz", "drive.google.com", "pixeldrain.com", "gofile.io", "sendspace.com", "itch.io", "workupload.com", "1fichier.com", "sourceforge.net"]
-SITES_MENCIONAVEIS = {"youtube": ["youtube.com", "youtu.be"], "archive": ["archive.org"], "mega": ["mega.nz"], "mediafire": ["mediafire.com"], "drive": ["drive.google.com"], "github": ["github.com"], "itch": ["itch.io"]}
-EXTENSOES_DIRETAS = [".exe", ".zip", ".rar", ".7z", ".tar", ".gz", ".epub", ".mobi", ".dmg", ".apk", ".mp4", ".mkv", ".avi", ".iso", ".jar", ".mp3"]
-URL_INUTILS = ["/comments", "/discussion", "/reviews", "/forum", "/profile", "/user/", "/community"]
+SITES_MENCIONAVEIS = {"youtube": ["youtube.com"], "archive": ["archive.org"], "mega": ["mega.nz"], "mediafire": ["mediafire.com"], "drive": ["drive.google.com"], "github": ["github.com"], "itch": ["itch.io"]}
 AD_SCRIPTS = ["googlesyndication.com", "doubleclick.net", "adnxs.com", "taboola.com", "outbrain.com"]
-PALAVRAS_DOWNLOAD_HTML = ["mega.nz", "mediafire.com", "drive.google.com", "pixeldrain.com", "gofile.io", "baixar agora", "download here"]
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+PALAVRAS_DOWNLOAD_HTML = ["mega.nz", "mediafire.com", "drive.google.com", "baixar agora", "download here"]
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 def extrair_dominio(url):
     try: return urlparse(url).netloc.replace("www.", "")
     except: return ""
 
-def detectar_site_mencionado(query_lower):
-    mencionados = []
-    for keyword, dominios in SITES_MENCIONAVEIS.items():
-        if keyword in query_lower: mencionados.extend(dominios)
-    return mencionados
-
-def e_url_inutil(url): return any(p in url.lower() for p in URL_INUTILS)
-
-def verificar_head(url):
-    try:
-        ct = requests.head(url, timeout=4, allow_redirects=True).headers.get("Content-Type", "")
-        tipos = ["application/zip", "application/x-rar", "application/octet-stream", "video/mp4"]
-        return any(t in ct for t in tipos)
-    except: return False
-
 def analisar_pagina(url):
     try:
-        html = requests.get(url, timeout=5, headers=HEADERS).text.lower()
+        r = requests.get(url, timeout=3, headers=HEADERS)
+        html = r.text.lower()
         ads = len([s for s in AD_SCRIPTS if s in html])
-        propaganda = "limpo" if ads == 0 else "agressivo"
-        tem_download = len([p for p in PALAVRAS_DOWNLOAD_HTML if p in html]) >= 1
+        propaganda = "limpo" if ads == 0 else "moderado" if ads <= 2 else "agressivo"
+        tem_download = any(p in html for p in PALAVRAS_DOWNLOAD_HTML)
         return propaganda, tem_download
     except: return "desconhecido", False
+
+def calcular_score(r, query_lower, sites_mencionados):
+    score = 40
+    if r["tag_atchload"] == "Perigoso": return 0
+    if r["tag_atchload"] == "Inseguro": score -= 30
+    
+    if r["dominio_limpo"] in WHITELIST: score += 20
+    if r["download_direto"]: score += 20
+    if r["propaganda"] == "limpo": score += 10
+    elif r["propaganda"] == "agressivo": score -= 15
+    
+    return max(0, min(score, 100))
 
 def processar_item(item, query, query_lower, sites_mencionados):
     link = item.get("link", "")
     dominio = extrair_dominio(link)
-    cache_seguranca = buscar_cache_local(link)
-    tag_seguranca = cache_seguranca[0] if cache_seguranca else "Aguardando Análise"
-    
     propaganda, download_direto = analisar_pagina(link)
+    tag_seguranca = buscar_cache_local(link)
     
-    return {
+    resultado = {
         "titulo": item.get("title", ""),
         "link": link,
         "dominio_limpo": dominio,
         "descricao": item.get("snippet", ""),
-        "tag_atchload": tag_seguranca,
         "download_direto": download_direto,
-        "score": 50 # Simplificado
+        "propaganda": propaganda,
+        "tag_atchload": tag_seguranca
     }
-
-
-#  ENDPOINTS DA API
-
+    
+    resultado["score"] = calcular_score(resultado, query_lower, sites_mencionados)
+    return resultado
 
 @app.get("/buscar")
 def buscar(q: str):
-    query_lower = q.lower()
-    sites_mencionados = detectar_site_mencionado(query_lower)
+    r = requests.get("https://serpapi.com/search", params={"q": q, "api_key": SERPAPI_KEY, "num": 5})
+    itens = r.json().get("organic_results", [])
     
-    queries = [f'"{q}" site:drive.google.com OR site:mega.nz OR site:mediafire.com']
-    itens_brutos = []
-    
-    for query_str in queries:
-        try:
-            r = requests.get("https://serpapi.com/search", params={"q": query_str, "api_key": SERPAPI_KEY, "num": 5})
-            itens_brutos.extend(r.json().get("organic_results", []))
-        except: pass
-
-    resultados = []
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futuros = {executor.submit(processar_item, item, q, query_lower, sites_mencionados): item for item in itens_brutos}
-        for futuro in as_completed(futuros):
-            resultados.append(futuro.result())
-    
-    return {"termo_buscado": q, "resultados": resultados}
+    resultados = [processar_item(i, q, q.lower(), []) for i in itens]
+    resultados.sort(key=lambda x: x['score'], reverse=True)
+    return {"resultados": resultados}
 
 @app.get("/verificar")
 def verificar_url(url: str = Query(...)):
-    cache = buscar_cache_local(url)
-    if cache:
-        return {"tag_atchload": cache[0]}
-    
     url_id = gerar_id_url_virustotal(url)
     headers = {"x-apikey": VIRUSTOTAL_API_KEY}
     resp = requests.get(f"https://www.virustotal.com/api/v3/urls/{url_id}", headers=headers)
     
-    if resp.status_code == 404:
-        requests.post("https://www.virustotal.com/api/v3/urls", headers=headers, data={"url": url})
-        return {"tag_atchload": "Análise em Processo"}
-    
     if resp.status_code == 200:
         stats = resp.json()['data']['attributes']['last_analysis_stats']
-        m, s = stats.get('malicious', 0), stats.get('suspicious', 0)
-        tag = calcular_tag_atchload(m, s)
-        salvar_no_banco(url, stats.get('harmless', 0), s, m, tag)
+        tag = calcular_tag_atchload(stats.get('malicious', 0), stats.get('suspicious', 0))
+        salvar_no_banco(url, tag)
         return {"tag_atchload": tag}
-        
-    return {"tag_atchload": "Erro"}
+    return {"tag_atchload": "Aguardando Análise"}

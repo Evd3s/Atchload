@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import axios from "axios"
 
 const CORES = {
@@ -25,13 +25,21 @@ function Tag({ cor, texto }) {
 }
 
 function ScoreBadge({ score }) {
-  const cor = score >= 80 ? CORES.green : score >= 60 ? CORES.blue : score >= 40 ? CORES.orange : CORES.red
+  // 70+ vira verde (excelente/download direto)
+  // 50+ vira azul (bom/informativo seguro)
+  // Abaixo de 50 vira laranja (atenção)
+  let cor;
+  if (score >= 70) cor = CORES.green;
+  else if (score >= 50) cor = CORES.blue;
+  else if (score >= 30) cor = CORES.orange;
+  else cor = CORES.red;
+
   return (
     <div style={{
-      width: 42, height: 42, borderRadius: 8, flexShrink: 0,
+      width: 44, height: 44, borderRadius: 10, flexShrink: 0,
       background: cor.bg, color: cor.text,
       display: "flex", alignItems: "center", justifyContent: "center",
-      fontWeight: 700, fontSize: 13
+      fontWeight: 800, fontSize: 14, border: `1px solid ${cor.text}30`
     }}>
       {score}
     </div>
@@ -41,8 +49,7 @@ function ScoreBadge({ score }) {
 function Card({ item }) {
   const [tag, setTag] = useState(item.tag_atchload)
 
- 
-  useState(() => {
+  useEffect(() => {
     if (tag === "Aguardando Análise" || tag === "Análise em Processo") {
       const interval = setInterval(async () => {
         try {
@@ -64,6 +71,12 @@ function Card({ item }) {
     return "gray";
   }
 
+  const getAdsColor = (prop) => {
+    if (prop === "limpo") return "green";
+    if (prop === "moderado") return "orange";
+    return "red";
+  }
+
   return (
     <div style={{ border: "1px solid #e0e0e0", borderRadius: 12, padding: "16px 20px", marginBottom: 14 }}>
       <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
@@ -74,6 +87,7 @@ function Card({ item }) {
           <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
             <Tag cor={getTagColor(tag)} texto={tag} />
             {item.download_direto && <Tag cor="purple" texto="Download Direto" />}
+            <Tag cor={getAdsColor(item.propaganda)} texto={`Ads: ${item.propaganda}`} />
           </div>
 
           <div style={{ fontSize: 13, color: "#444", marginBottom: 12 }}>{item.descricao}</div>
@@ -97,10 +111,8 @@ export default function App() {
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState("")
 
-  // Proteção contra múltiplas chamadas simultâneas
   const buscar = useCallback(async () => {
     if (!query.trim() || carregando) return
-    
     setCarregando(true)
     setErro("")
     try {
