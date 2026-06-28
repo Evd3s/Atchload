@@ -19,12 +19,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configurações
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
 NOME_BANCO = "atchload.db"
 
-# MÓDULO DE SEGURANÇA 
+# --- MÓDULO DE SEGURANÇA E BANCO DE DADOS ---
 def inicializar_banco():
     conexao = sqlite3.connect(NOME_BANCO)
     cursor = conexao.cursor()
@@ -60,18 +59,28 @@ def gerar_id_url_virustotal(url: str) -> str:
     return base64.urlsafe_b64encode(url.encode("utf-8")).decode("utf-8").strip("=")
 
 def calcular_tag_atchload(malicious: int, suspicious: int) -> str:
-    if malicious > 2: return "Perigoso"
-    elif malicious > 0 or suspicious > 0: return "Inseguro"
+    # Lógica refinada para lidar com Falsos Positivos
+    if malicious >= 3: 
+        return "Perigoso"
+    elif malicious >= 1 or suspicious > 2: 
+        return "Alerta de Cuidado"
     return "Seguro / Confiável"
 
 inicializar_banco()
 
-#  MÓDULO DE BUSCA  
+# --- MÓDULO DE BUSCA E ANÁLISE ---
 WHITELIST = ["archive.org", "mediafire.com", "mega.nz", "drive.google.com", "pixeldrain.com", "gofile.io", "sendspace.com", "itch.io", "workupload.com", "1fichier.com", "sourceforge.net"]
 SITES_MENCIONAVEIS = {"youtube": ["youtube.com"], "archive": ["archive.org"], "mega": ["mega.nz"], "mediafire": ["mediafire.com"], "drive": ["drive.google.com"], "github": ["github.com"], "itch": ["itch.io"]}
-AD_SCRIPTS = ["googlesyndication.com", "doubleclick.net", "adnxs.com", "taboola.com", "outbrain.com"]
+
+AD_SCRIPTS = [
+    "googlesyndication.com", "doubleclick.net", "googleadservices.com",
+    "adnxs.com", "taboola.com", "outbrain.com", "propellerads.com",
+    "popads.net", "adcash.com", "exoclick.com", "onclickads.net",
+    "adsterra.com", "mgid.com"
+]
+
 PALAVRAS_DOWNLOAD_HTML = ["mega.nz", "mediafire.com", "drive.google.com", "baixar agora", "download here"]
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 def extrair_dominio(url):
     try: return urlparse(url).netloc.replace("www.", "")
@@ -87,19 +96,24 @@ def analisar_pagina(url):
         return propaganda, tem_download
     except: return "desconhecido", False
 
-def calcular_score(r, query_lower, sites_mencionados):
+def calcular_score(r):
     score = 40
+    # Ajuste do Score baseado na nova tag
     if r["tag_atchload"] == "Perigoso": return 0
-    if r["tag_atchload"] == "Inseguro": score -= 30
+    if r["tag_atchload"] == "Alerta de Cuidado": score -= 15 # Penalidade menor por ser possível falso positivo
+    
+    SITES_INFORMATIVOS = ["imdb.com", "wikipedia.org", "adorocinema.com", "play.google.com"]
+    if r["dominio_limpo"] in SITES_INFORMATIVOS: score += 20
     
     if r["dominio_limpo"] in WHITELIST: score += 20
     if r["download_direto"]: score += 20
+    
     if r["propaganda"] == "limpo": score += 10
     elif r["propaganda"] == "agressivo": score -= 15
     
     return max(0, min(score, 100))
 
-def processar_item(item, query, query_lower, sites_mencionados):
+def processar_item(item):
     link = item.get("link", "")
     dominio = extrair_dominio(link)
     propaganda, download_direto = analisar_pagina(link)
@@ -115,27 +129,53 @@ def processar_item(item, query, query_lower, sites_mencionados):
         "tag_atchload": tag_seguranca
     }
     
-    resultado["score"] = calcular_score(resultado, query_lower, sites_mencionados)
+    resultado["score"] = calcular_score(resultado)
     return resultado
 
 @app.get("/buscar")
 def buscar(q: str):
-    r = requests.get("https://serpapi.com/search", params={"q": q, "api_key": SERPAPI_KEY, "num": 5})
-    itens = r.json().get("organic_results", [])
+    try:
+        r = requests.get("https://serpapi.com/search", params={"q": q, "api_key": SERPAPI_KEY, "num": 5})
+        itens = r.json().get("organic_results", [])
+    except:
+        itens = []
     
-    resultados = [processar_item(i, q, q.lower(), []) for i in itens]
+    resultados = []
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futuros = {executor.submit(processar_item, item): item for item in itens}
+        for futuro in as_completed(futuros):
+            resultados.append(futuro.result())
+            
     resultados.sort(key=lambda x: x['score'], reverse=True)
     return {"resultados": resultados}
 
 @app.get("/verificar")
 def verificar_url(url: str = Query(...)):
+    cache = buscar_cache_local(url)
+    if cache != "Aguardando Análise" and cache != "Enviado ao VT": 
+        return {"tag_atchload": cache}
+    
     url_id = gerar_id_url_virustotal(url)
     headers = {"x-apikey": VIRUSTOTAL_API_KEY}
+    
     resp = requests.get(f"https://www.virustotal.com/api/v3/urls/{url_id}", headers=headers)
+    
+    if resp.status_code == 404:
+        post_headers = {
+            "x-apikey": VIRUSTOTAL_API_KEY,
+            "accept": "application/json",
+            "content-type": "application/x-www-form-urlencoded"
+        }
+        requests.post("https://www.virustotal.com/api/v3/urls", headers=post_headers, data={"url": url})
+        
+        salvar_no_banco(url, "Enviado ao VT")
+        return {"tag_atchload": "Enviado ao VT"}
     
     if resp.status_code == 200:
         stats = resp.json()['data']['attributes']['last_analysis_stats']
-        tag = calcular_tag_atchload(stats.get('malicious', 0), stats.get('suspicious', 0))
+        m, s = stats.get('malicious', 0), stats.get('suspicious', 0)
+        tag = calcular_tag_atchload(m, s)
         salvar_no_banco(url, tag)
         return {"tag_atchload": tag}
-    return {"tag_atchload": "Aguardando Análise"}
+        
+    return {"tag_atchload": "Erro na API"}
