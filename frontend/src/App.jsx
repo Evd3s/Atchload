@@ -10,6 +10,7 @@ const DEFAULT_CONFIG = {
   mostrarTags: false,
   mostrarMotivos: false,
   mostrarDescricaoCompleta: false,
+  mostrarScore: true,
 }
 
 /* Paleta nova: grafite + ciano do ícone (#00D2FC). */
@@ -320,7 +321,6 @@ function Card({ r, tema, config, favorito, alternarFavorito, index }) {
     setLinkPendente(null)
   }, [r.link, r.score, r.tag_atchload, r.hash, r.malicious, r.suspicious])
 
-  const tipo = classificarResultado(r)
   const escuro = tema.modoEscuro
   const downloadHref = r.download_url ? `${API_URL}/baixar?url=${encodeURIComponent(r.download_url)}` : ""
   const descricao = config.mostrarDescricaoCompleta ? r.descricao : limitarTexto(r.descricao, 175)
@@ -392,16 +392,7 @@ function Card({ r, tema, config, favorito, alternarFavorito, index }) {
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8, flexWrap: "wrap" }}>
-              <Tag cor={tipo.cor} texto={tipo.texto} icon={tipo.icon} escuro={escuro} />
-              {tagSeg && tagSeg !== "Aguardando Análise" && (
-                <Tag
-                  cor={getSecurityColor(tagSeg)}
-                  texto={securityText(tagSeg)}
-                  icon={tagSeg === "Seguro / Confiável" ? <Icon.check /> : tagSeg === "Perigoso" || tagSeg === "Alerta de Cuidado" ? <Icon.alert /> : null}
-                  escuro={escuro}
-                />
-              )}
-              <span style={{ fontSize: 12.5, color: tema.mutedSoft, fontWeight: 600 }}>
+              <span style={{ fontSize: 12.5, color: tema.mutedSoft, fontWeight: 700 }}>
                 {r.dominio || r.dominio_limpo}
               </span>
             </div>
@@ -555,7 +546,9 @@ function Card({ r, tema, config, favorito, alternarFavorito, index }) {
             )}
           </div>
 
-          <ScoreBadge score={scoreAtual} tema={{ ...tema, modoEscuro: escuro }} />
+          {config.mostrarScore && (
+            <ScoreBadge score={scoreAtual} tema={{ ...tema, modoEscuro: escuro }} />
+          )}
         </div>
       </article>
 
@@ -884,7 +877,8 @@ export default function App() {
             }}>
               <Toggle tema={tema} label="Mostrar tags técnicas" ativo={config.mostrarTags} onClick={() => atualizarConfig("mostrarTags", !config.mostrarTags)} />
               <Toggle tema={tema} label="Mostrar motivos do score" ativo={config.mostrarMotivos} onClick={() => atualizarConfig("mostrarMotivos", !config.mostrarMotivos)} />
-              <Toggle tema={tema} label="Descrição completa" ativo={config.mostrarDescricaoCompleta} onClick={() => atualizarConfig("mostrarDescricaoCompleta", !config.mostrarDescricaoCompleta)} />
+              <Toggle tema={tema} label="Mostrar descrição completa" ativo={config.mostrarDescricaoCompleta} onClick={() => atualizarConfig("mostrarDescricaoCompleta", !config.mostrarDescricaoCompleta)} />
+              <Toggle tema={tema} label="Mostrar score" ativo={config.mostrarScore} onClick={() => atualizarConfig("mostrarScore", !config.mostrarScore)} />
               <p style={{ fontSize: 11.5, color: tema.mutedSoft, margin: "10px 0 8px", lineHeight: 1.45 }}>
                 Essas preferências ficam salvas neste navegador.
               </p>
