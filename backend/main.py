@@ -1,18 +1,99 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from urllib.parse import urlparse, quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
-import requests, os, re, unicodedata
+import requests, os, re, unicodedata, sqlite3, base64
+from datetime import datetime
 
 load_dotenv()
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+NOME_BANCO = os.path.join(BASE_DIR, "atchload_seguranca.db")
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+# ──────────────────────────────────────────────
+# Segurança: cache local + VirusTotal
+# Mantém a busca rápida: /buscar só usa cache. A API do VT só é chamada
+# quando o usuário clica em "Verificar segurança" no frontend.
+# ──────────────────────────────────────────────
+def inicializar_banco():
+    conexao = sqlite3.connect(NOME_BANCO)
+    cursor = conexao.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS historico_seguranca (
+        alvo TEXT PRIMARY KEY,
+        tag_atchload TEXT,
+        hash_arquivo TEXT,
+        malicious INTEGER DEFAULT 0,
+        suspicious INTEGER DEFAULT 0,
+        data_consulta TEXT
+    )
+    """)
+    conexao.commit()
+    conexao.close()
+
+def buscar_cache_local(alvo: str):
+    try:
+        conexao = sqlite3.connect(NOME_BANCO)
+        cursor = conexao.cursor()
+        cursor.execute(
+            "SELECT tag_atchload, hash_arquivo, malicious, suspicious, data_consulta FROM historico_seguranca WHERE alvo = ?",
+            (alvo,)
+        )
+        res = cursor.fetchone()
+        conexao.close()
+        if not res:
+            return None
+        return {
+            "tag": res[0] or "Aguardando Análise",
+            "hash": res[1] or None,
+            "malicious": int(res[2] or 0),
+            "suspicious": int(res[3] or 0),
+            "data_consulta": res[4]
+        }
+    except Exception:
+        return None
+
+def salvar_no_banco(alvo: str, tag: str, hash_arq: str | None, malicious: int, suspicious: int):
+    conexao = sqlite3.connect(NOME_BANCO)
+    cursor = conexao.cursor()
+    data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute("""
+        INSERT OR REPLACE INTO historico_seguranca
+        (alvo, tag_atchload, hash_arquivo, malicious, suspicious, data_consulta)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (alvo, tag, hash_arq or "", int(malicious or 0), int(suspicious or 0), data_atual))
+    conexao.commit()
+    conexao.close()
+
+def gerar_id_url_virustotal(url: str) -> str:
+    return base64.urlsafe_b64encode(url.encode("utf-8")).decode("utf-8").strip("=")
+
+def calcular_tag_atchload(malicious: int, suspicious: int) -> str:
+    if malicious >= 3:
+        return "Perigoso"
+    if malicious >= 1 or suspicious > 2:
+        return "Alerta de Cuidado"
+    return "Seguro / Confiável"
+
+def penalidade_seguranca(tag: str) -> int:
+    if tag == "Perigoso":
+        return -80
+    if tag == "Alerta de Cuidado":
+        return -22
+    if tag == "Seguro / Confiável":
+        return 3
+    return 0
+
+inicializar_banco()
 
 # ──────────────────────────────────────────────
 # Domínios por categoria. A ideia aqui NÃO é decidir resultado na mão,
@@ -301,6 +382,9 @@ def classificar(item, q, inten, pedidos):
     elif streaming: tipo = "streaming"
     elif social_ruido: tipo = "social_ruido"
 
+    cache_seg = buscar_cache_local(link)
+    tag_seg = cache_seg["tag"] if cache_seg else "Aguardando Análise"
+
     return {
         "titulo": tit, "descricao": desc, "link": link, "dominio": disp or dom, "dominio_limpo": dom,
         "tipo": tipo, "relevancia": relevancia(q, texto),
@@ -315,7 +399,12 @@ def classificar(item, q, inten, pedidos):
         "cinema": cinema, "documento_irrelevante": doc_ruim,
         "catalogo": bloqueado or doc_ruim,
         "sinal_antigo": old_ok, "sinal_novo": old_bad,
-        "propaganda": prop, "score": 0, "motivos": []
+        "propaganda": prop,
+        "tag_atchload": tag_seg,
+        "hash": cache_seg["hash"] if cache_seg else None,
+        "malicious": cache_seg["malicious"] if cache_seg else 0,
+        "suspicious": cache_seg["suspicious"] if cache_seg else 0,
+        "score": 0, "motivos": []
     }
 
 def teto(score, r, inten, site_pedido, q):
@@ -403,6 +492,18 @@ def pontuar(r, q, inten, pedidos):
         score += 12 if r["download_direto"] else 6 if (r["host_bom"] or r["tipo"] == "social_com_link" or r["oficial"]) else -12
     elif inten == "documento" and (r["download_direto"] or r["host_bom"]):
         score += 10
+
+    tag_seg = r.get("tag_atchload")
+    delta_seg = penalidade_seguranca(tag_seg)
+    if tag_seg == "Perigoso":
+        score = min(score, 12)
+        motivos.append("segurança: perigoso pelo VirusTotal")
+    elif tag_seg == "Alerta de Cuidado":
+        score += delta_seg
+        motivos.append("-22 alerta do VirusTotal")
+    elif tag_seg == "Seguro / Confiável":
+        score += delta_seg
+        motivos.append("+3 segurança verificada")
 
     antes = score
     score = teto(score, r, inten, site_pedido, q)
@@ -523,6 +624,72 @@ def buscar(q: str):
     resultados.sort(key=lambda r: r["score"], reverse=True)
     resultados = limitar_dominios(resultados)
     return {"query": q, "intencao": inten, "total": len(resultados), "resultados": resultados[:60]}
+
+@app.get("/verificar")
+def verificar_url(url: str = Query(...)):
+    url = (url or "").strip()
+    if not url.startswith("http"):
+        raise HTTPException(status_code=400, detail="URL inválida")
+
+    cache = buscar_cache_local(url)
+    if cache and cache["tag"] not in ["Aguardando Análise", "Enviado ao VT", "Erro na API"]:
+        tag = cache["tag"]
+        return {
+            "tag_atchload": tag,
+            "hash": cache["hash"],
+            "malicious": cache["malicious"],
+            "suspicious": cache["suspicious"],
+            "score_delta": penalidade_seguranca(tag)
+        }
+
+    if not VIRUSTOTAL_API_KEY:
+        return {
+            "tag_atchload": "VT indisponível",
+            "hash": None,
+            "malicious": 0,
+            "suspicious": 0,
+            "score_delta": 0,
+            "detail": "VIRUSTOTAL_API_KEY não encontrada no .env"
+        }
+
+    headers_vt = {"x-apikey": VIRUSTOTAL_API_KEY}
+    url_id = gerar_id_url_virustotal(url)
+
+    try:
+        resp = requests.get(f"https://www.virustotal.com/api/v3/urls/{url_id}", headers=headers_vt, timeout=12)
+
+        # Se o VT ainda não conhece a URL, envia para análise. O resultado costuma não sair na hora.
+        if resp.status_code == 404:
+            post = requests.post("https://www.virustotal.com/api/v3/urls", headers=headers_vt, data={"url": url}, timeout=12)
+            if post.status_code in [200, 202]:
+                salvar_no_banco(url, "Enviado ao VT", None, 0, 0)
+                return {"tag_atchload": "Enviado ao VT", "hash": None, "malicious": 0, "suspicious": 0, "score_delta": 0}
+            salvar_no_banco(url, "Erro na API", None, 0, 0)
+            return {"tag_atchload": "Erro na API", "hash": None, "malicious": 0, "suspicious": 0, "score_delta": 0}
+
+        if resp.status_code == 200:
+            dados = resp.json().get("data", {}).get("attributes", {})
+            stats = dados.get("last_analysis_stats", {}) or {}
+            malicious = int(stats.get("malicious", 0) or 0)
+            suspicious = int(stats.get("suspicious", 0) or 0)
+            tag = calcular_tag_atchload(malicious, suspicious)
+            hash_arquivo = dados.get("last_http_response_content_sha256") or dados.get("last_final_url") or None
+            salvar_no_banco(url, tag, hash_arquivo, malicious, suspicious)
+            return {
+                "tag_atchload": tag,
+                "hash": hash_arquivo,
+                "malicious": malicious,
+                "suspicious": suspicious,
+                "score_delta": penalidade_seguranca(tag)
+            }
+
+        if resp.status_code == 429:
+            return {"tag_atchload": "Limite do VT", "hash": None, "malicious": 0, "suspicious": 0, "score_delta": 0}
+
+        return {"tag_atchload": "Erro na API", "hash": None, "malicious": 0, "suspicious": 0, "score_delta": 0}
+
+    except Exception as e:
+        return {"tag_atchload": "Erro na API", "hash": None, "malicious": 0, "suspicious": 0, "score_delta": 0, "detail": str(e)}
 
 @app.get("/baixar")
 def baixar(url: str):

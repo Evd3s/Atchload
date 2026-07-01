@@ -247,78 +247,227 @@ function TagsAvancadas({ r, escuro }) {
   )
 }
 
+function getSecurityColor(tag) {
+  if (tag === "Seguro / Confiável") return "green"
+  if (tag === "Alerta de Cuidado") return "orange"
+  if (tag === "Perigoso") return "red"
+  if (tag === "Enviado ao VT") return "blue"
+  if (tag === "Limite do VT" || tag === "Erro na API" || tag === "VT indisponível") return "orange"
+  return "gray"
+}
+
+function isSecurityRisk(tag) {
+  return tag === "Perigoso" || tag === "Alerta de Cuidado"
+}
+
+function isSecurityAnalyzed(tag) {
+  return tag === "Seguro / Confiável" || tag === "Alerta de Cuidado" || tag === "Perigoso"
+}
+
+function securityText(tag) {
+  if (!tag || tag === "Aguardando Análise") return "Não verificado"
+  return tag
+}
+
+function ModalBase({ tema, children }) {
+  return (
+    <div style={{
+      position: "fixed",
+      inset: 0,
+      background: tema.modoEscuro ? "rgba(1,8,12,0.78)" : "rgba(8,17,22,0.52)",
+      backdropFilter: "blur(8px)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: 9999,
+      padding: 18,
+      animation: "fadeUp 0.18s ease both"
+    }}>
+      <div style={{
+        width: "min(520px, 100%)",
+        background: tema.card,
+        color: tema.text,
+        border: `1px solid ${tema.border}`,
+        borderRadius: 20,
+        boxShadow: tema.shadowHover,
+        padding: 24
+      }}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 function Card({ r, tema, config, favorito, alternarFavorito, index }) {
   const [hover, setHover] = useState(false)
+  const [tagSeg, setTagSeg] = useState(r.tag_atchload || "Aguardando Análise")
+  const [hash, setHash] = useState(r.hash || null)
+  const [stats, setStats] = useState({ malicious: r.malicious || 0, suspicious: r.suspicious || 0 })
+  const [scoreAtual, setScoreAtual] = useState(r.score || 0)
+  const [verificando, setVerificando] = useState(false)
+  const [modalRisco, setModalRisco] = useState(false)
+  const [modalDetalhes, setModalDetalhes] = useState(false)
+  const [linkPendente, setLinkPendente] = useState(null)
+
+  useEffect(() => {
+    setTagSeg(r.tag_atchload || "Aguardando Análise")
+    setHash(r.hash || null)
+    setStats({ malicious: r.malicious || 0, suspicious: r.suspicious || 0 })
+    setScoreAtual(r.score || 0)
+    setVerificando(false)
+    setModalRisco(false)
+    setModalDetalhes(false)
+    setLinkPendente(null)
+  }, [r.link, r.score, r.tag_atchload, r.hash, r.malicious, r.suspicious])
+
   const tipo = classificarResultado(r)
   const escuro = tema.modoEscuro
   const downloadHref = r.download_url ? `${API_URL}/baixar?url=${encodeURIComponent(r.download_url)}` : ""
   const descricao = config.mostrarDescricaoCompleta ? r.descricao : limitarTexto(r.descricao, 175)
+  const analisado = isSecurityAnalyzed(tagSeg)
+  const risco = isSecurityRisk(tagSeg)
+
+  const aplicarResultadoSeguranca = (data) => {
+    const novaTag = data.tag_atchload || "Erro na API"
+    setTagSeg(novaTag)
+    setHash(data.hash || null)
+    setStats({ malicious: data.malicious || 0, suspicious: data.suspicious || 0 })
+
+    setScoreAtual(prev => {
+      if (novaTag === "Perigoso") return Math.min(prev, 12)
+      if (novaTag === "Alerta de Cuidado") return Math.max(0, prev - 22)
+      if (novaTag === "Seguro / Confiável") return Math.min(100, prev + 3)
+      return prev
+    })
+  }
+
+  const verificarSeguranca = async () => {
+    if (verificando) return
+    setVerificando(true)
+    try {
+      const res = await axios.get(`${API_URL}/verificar`, { params: { url: r.link } })
+      aplicarResultadoSeguranca(res.data || {})
+    } catch {
+      setTagSeg("Erro na API")
+    } finally {
+      setVerificando(false)
+    }
+  }
+
+  const abrirComProtecao = (e, destino) => {
+    if (risco) {
+      e.preventDefault()
+      setLinkPendente(destino)
+      setModalRisco(true)
+    }
+  }
+
+  const favoritoAtualizado = {
+    ...r,
+    score: scoreAtual,
+    tag_atchload: tagSeg,
+    hash,
+    malicious: stats.malicious,
+    suspicious: stats.suspicious
+  }
 
   return (
-    <article
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        border: `1px solid ${hover ? tema.borderStrong : tema.border}`,
-        borderRadius: 18,
-        padding: "19px 20px",
-        marginBottom: 12,
-        background: tema.card,
-        boxShadow: hover ? tema.shadowHover : tema.shadow,
-        transform: hover ? "translateY(-2px)" : "translateY(0)",
-        transition: "transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease",
-        animation: `cardIn 0.42s cubic-bezier(.22,1,.36,1) both`,
-        animationDelay: `${Math.min(index * 0.035, 0.3)}s`,
-      }}
-    >
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8, flexWrap: "wrap" }}>
-            <Tag cor={tipo.cor} texto={tipo.texto} icon={tipo.icon} escuro={escuro} />
-            <span style={{ fontSize: 12.5, color: tema.mutedSoft, fontWeight: 600 }}>
-              {r.dominio || r.dominio_limpo}
-            </span>
-          </div>
+    <>
+      <article
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        style={{
+          border: `1px solid ${risco ? (tagSeg === "Perigoso" ? (escuro ? CORES.red.textDark : CORES.red.text) : (escuro ? CORES.orange.textDark : CORES.orange.text)) : (hover ? tema.borderStrong : tema.border)}`,
+          borderRadius: 18,
+          padding: "19px 20px",
+          marginBottom: 12,
+          background: tema.card,
+          boxShadow: hover ? tema.shadowHover : tema.shadow,
+          transform: hover ? "translateY(-2px)" : "translateY(0)",
+          transition: "transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease",
+          animation: `cardIn 0.42s cubic-bezier(.22,1,.36,1) both`,
+          animationDelay: `${Math.min(index * 0.035, 0.3)}s`,
+        }}
+      >
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8, flexWrap: "wrap" }}>
+              <Tag cor={tipo.cor} texto={tipo.texto} icon={tipo.icon} escuro={escuro} />
+              {tagSeg && tagSeg !== "Aguardando Análise" && (
+                <Tag
+                  cor={getSecurityColor(tagSeg)}
+                  texto={securityText(tagSeg)}
+                  icon={tagSeg === "Seguro / Confiável" ? <Icon.check /> : tagSeg === "Perigoso" || tagSeg === "Alerta de Cuidado" ? <Icon.alert /> : null}
+                  escuro={escuro}
+                />
+              )}
+              <span style={{ fontSize: 12.5, color: tema.mutedSoft, fontWeight: 600 }}>
+                {r.dominio || r.dominio_limpo}
+              </span>
+            </div>
 
-          <a
-            href={r.link}
-            target="_blank"
-            rel="noreferrer"
-            style={{
-              display: "inline-flex",
-              alignItems: "baseline",
-              gap: 6,
-              fontSize: 16.5,
-              lineHeight: 1.3,
-              fontWeight: 800,
-              marginBottom: 7,
-              color: tema.text,
-              textDecoration: "none",
-            }}
-          >
-            <span style={{
-              backgroundImage: `linear-gradient(${tema.accent}, ${tema.accent})`,
-              backgroundSize: hover ? "100% 2px" : "0% 2px",
-              backgroundRepeat: "no-repeat",
-              backgroundPosition: "0 100%",
-              transition: "background-size 0.2s ease",
-              paddingBottom: 1
-            }}>
-              {r.titulo || "Resultado sem título"}
-            </span>
-            <span style={{ color: tema.mutedSoft, flexShrink: 0 }}><Icon.external /></span>
-          </a>
+            <a
+              href={r.link}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => abrirComProtecao(e, r.link)}
+              style={{
+                display: "inline-flex",
+                alignItems: "baseline",
+                gap: 6,
+                fontSize: 16.5,
+                lineHeight: 1.3,
+                fontWeight: 800,
+                marginBottom: 7,
+                color: tema.text,
+                textDecoration: "none",
+              }}
+            >
+              <span style={{
+                backgroundImage: `linear-gradient(${tema.accent}, ${tema.accent})`,
+                backgroundSize: hover ? "100% 2px" : "0% 2px",
+                backgroundRepeat: "no-repeat",
+                backgroundPosition: "0 100%",
+                transition: "background-size 0.2s ease",
+                paddingBottom: 1
+              }}>
+                {r.titulo || "Resultado sem título"}
+              </span>
+              <span style={{ color: tema.mutedSoft, flexShrink: 0 }}><Icon.external /></span>
+            </a>
 
-          {r.descricao && (
-            <p style={{ fontSize: 13.5, color: tema.muted, margin: 0, lineHeight: 1.6 }}>
-              {descricao}
-            </p>
-          )}
+            {r.descricao && (
+              <p style={{ fontSize: 13.5, color: tema.muted, margin: 0, lineHeight: 1.6 }}>
+                {descricao}
+              </p>
+            )}
 
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
-            {r.download_direto && r.download_url && (
-              <a
-                href={downloadHref}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
+              {r.download_direto && r.download_url && (
+                <a
+                  href={downloadHref}
+                  onClick={(e) => abrirComProtecao(e, downloadHref)}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "8px 14px",
+                    borderRadius: 10,
+                    fontSize: 13,
+                    fontWeight: 800,
+                    background: escuro ? CORES.green.bgDark : CORES.green.bg,
+                    color: escuro ? CORES.green.textDark : CORES.green.text,
+                    textDecoration: "none",
+                    transition: "filter 0.15s"
+                  }}
+                >
+                  <Icon.arrowDown size={13} /> Baixar arquivo
+                </a>
+              )}
+
+              <button
+                onClick={() => alternarFavorito(favoritoAtualizado)}
+                title={favorito ? "Remover dos favoritos" : "Adicionar aos favoritos"}
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -327,59 +476,142 @@ function Card({ r, tema, config, favorito, alternarFavorito, index }) {
                   borderRadius: 10,
                   fontSize: 13,
                   fontWeight: 800,
-                  background: escuro ? CORES.green.bgDark : CORES.green.bg,
-                  color: escuro ? CORES.green.textDark : CORES.green.text,
-                  textDecoration: "none",
-                  transition: "filter 0.15s"
+                  border: `1px solid ${favorito ? "transparent" : tema.border}`,
+                  background: favorito ? tema.accentSoft : "transparent",
+                  color: favorito ? tema.accentText : tema.muted,
+                  cursor: "pointer",
+                  transition: "border-color 0.15s, color 0.15s, background 0.15s"
                 }}
               >
-                <Icon.arrowDown size={13} /> Baixar arquivo
-              </a>
+                <Icon.star size={13} filled={favorito} />
+                {favorito ? "Salvo" : "Favoritar"}
+              </button>
+
+              {!analisado && (
+                <button
+                  onClick={verificarSeguranca}
+                  disabled={verificando}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "8px 14px",
+                    borderRadius: 10,
+                    fontSize: 13,
+                    fontWeight: 800,
+                    border: `1px solid ${tema.border}`,
+                    background: verificando ? tema.surface : "transparent",
+                    color: verificando ? tema.mutedSoft : tema.accentText,
+                    cursor: verificando ? "wait" : "pointer",
+                  }}
+                >
+                  {verificando ? "Verificando..." : "Verificar segurança"}
+                </button>
+              )}
+
+              {analisado && (
+                <button
+                  onClick={() => setModalDetalhes(true)}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "8px 14px",
+                    borderRadius: 10,
+                    fontSize: 13,
+                    fontWeight: 800,
+                    border: `1px solid ${tema.border}`,
+                    background: "transparent",
+                    color: tema.muted,
+                    cursor: "pointer",
+                  }}
+                >
+                  Relatório
+                </button>
+              )}
+            </div>
+
+            {config.mostrarTags && (
+              <>
+                <TagsAvancadas r={r} escuro={escuro} />
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                  <Tag cor={getSecurityColor(tagSeg)} texto={`Segurança: ${securityText(tagSeg)}`} escuro={escuro} />
+                </div>
+              </>
             )}
 
-            <button
-              onClick={() => alternarFavorito(r)}
-              title={favorito ? "Remover dos favoritos" : "Adicionar aos favoritos"}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "8px 14px",
-                borderRadius: 10,
-                fontSize: 13,
-                fontWeight: 800,
-                border: `1px solid ${favorito ? "transparent" : tema.border}`,
-                background: favorito ? tema.accentSoft : "transparent",
-                color: favorito ? tema.accentText : tema.muted,
-                cursor: "pointer",
-                transition: "border-color 0.15s, color 0.15s, background 0.15s"
-              }}
-            >
-              <Icon.star size={13} filled={favorito} />
-              {favorito ? "Salvo" : "Favoritar"}
-            </button>
+            {config.mostrarMotivos && r.motivos && r.motivos.length > 0 && (
+              <div style={{
+                fontSize: 11,
+                color: tema.mutedSoft,
+                marginTop: 12,
+                lineHeight: 1.7,
+                paddingTop: 10,
+                borderTop: `1px dashed ${tema.border}`,
+                fontFamily: "ui-monospace, 'SF Mono', Consolas, monospace"
+              }}>
+                {r.motivos.join("  ·  ")}
+              </div>
+            )}
           </div>
 
-          {config.mostrarTags && <TagsAvancadas r={r} escuro={escuro} />}
-
-          {config.mostrarMotivos && r.motivos && r.motivos.length > 0 && (
-            <div style={{
-              fontSize: 11,
-              color: tema.mutedSoft,
-              marginTop: 12,
-              lineHeight: 1.7,
-              paddingTop: 10,
-              borderTop: `1px dashed ${tema.border}`,
-              fontFamily: "ui-monospace, 'SF Mono', Consolas, monospace"
-            }}>
-              {r.motivos.join("  ·  ")}
-            </div>
-          )}
+          <ScoreBadge score={scoreAtual} tema={{ ...tema, modoEscuro: escuro }} />
         </div>
+      </article>
 
-        <ScoreBadge score={r.score || 0} tema={tema} />
-      </div>
-    </article>
+      {modalRisco && (
+        <ModalBase tema={tema}>
+          <h2 style={{ margin: "0 0 10px", color: tagSeg === "Perigoso" ? (escuro ? CORES.red.textDark : CORES.red.text) : (escuro ? CORES.orange.textDark : CORES.orange.text), fontSize: 21 }}>
+            Aviso de segurança
+          </h2>
+          <p style={{ color: tema.muted, lineHeight: 1.6, margin: "0 0 12px" }}>
+            O VirusTotal classificou este destino como <strong style={{ color: tema.text }}>{tagSeg}</strong>. Isso não prova sozinho que o site é malicioso, mas indica que vale ter cuidado antes de abrir ou baixar qualquer arquivo.
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 20 }}>
+            <button onClick={() => setModalRisco(false)} style={{ padding: "11px 15px", borderRadius: 11, border: "none", background: tema.button, color: tema.buttonText, fontWeight: 800, cursor: "pointer" }}>
+              Voltar em segurança
+            </button>
+            <button onClick={() => { const alvo = linkPendente || r.link; setModalRisco(false); window.open(alvo, "_blank") }} style={{ padding: "11px 15px", borderRadius: 11, border: `1px solid ${tema.border}`, background: "transparent", color: tema.muted, fontWeight: 800, cursor: "pointer" }}>
+              Entendo, abrir mesmo assim
+            </button>
+          </div>
+        </ModalBase>
+      )}
+
+      {modalDetalhes && (
+        <ModalBase tema={tema}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 14 }}>
+            <h2 style={{ margin: 0, fontSize: 20 }}>Relatório de segurança</h2>
+            <button onClick={() => setModalDetalhes(false)} style={{ border: "none", background: "transparent", color: tema.muted, cursor: "pointer", fontSize: 20, lineHeight: 1 }}>×</button>
+          </div>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+            <Tag cor={getSecurityColor(tagSeg)} texto={securityText(tagSeg)} icon={tagSeg === "Seguro / Confiável" ? <Icon.check /> : isSecurityRisk(tagSeg) ? <Icon.alert /> : null} escuro={escuro} />
+            <Tag cor={stats.malicious > 0 ? "red" : "gray"} texto={`${stats.malicious || 0} malicioso`} escuro={escuro} />
+            <Tag cor={stats.suspicious > 0 ? "orange" : "gray"} texto={`${stats.suspicious || 0} suspeito`} escuro={escuro} />
+          </div>
+
+          <p style={{ color: tema.muted, lineHeight: 1.6, margin: "0 0 14px", fontSize: 13.5 }}>
+            A análise vem do VirusTotal. Use como sinal de segurança, não como garantia absoluta.
+          </p>
+
+          <div style={{
+            border: `1px solid ${tema.border}`,
+            borderRadius: 14,
+            padding: 12,
+            background: escuro ? "#071015" : "#F2FAFC",
+            color: tema.accentText,
+            fontFamily: "ui-monospace, 'SF Mono', Consolas, monospace",
+            fontSize: 11.5,
+            lineHeight: 1.6,
+            wordBreak: "break-all"
+          }}>
+            <strong style={{ color: tema.muted, display: "block", marginBottom: 4 }}>SHA-256 / identificador retornado:</strong>
+            {hash || "Não disponível"}
+          </div>
+        </ModalBase>
+      )}
+    </>
   )
 }
 
