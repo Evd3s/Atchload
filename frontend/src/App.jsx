@@ -9,8 +9,17 @@ const DEFAULT_CONFIG = {
   tema: "claro",
   mostrarTags: false,
   mostrarMotivos: false,
-  mostrarDescricaoCompleta: false,
   mostrarScore: true,
+  filtros: {
+    semVideo: false,
+    semJogos: false,
+    semSoftware: false,
+    semDocumentos: false,
+    semSociais: false,
+    somenteDownload: false,
+    positivos: [],
+    negativos: [],
+  },
 }
 
 /* Paleta nova: grafite + ciano do ícone (#00D2FC). */
@@ -83,6 +92,21 @@ function limitarTexto(texto, limite = 175) {
   if (!texto) return ""
   if (texto.length <= limite) return texto
   return texto.slice(0, limite).trimEnd() + "..."
+}
+
+function normalizarDominioFiltro(valor) {
+  return (valor || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split("/")[0]
+    .split("?")[0]
+}
+
+function dominioFiltroValido(valor) {
+  const limpo = normalizarDominioFiltro(valor)
+  return limpo.includes(".") && limpo.length >= 4
 }
 
 const Icon = {
@@ -323,7 +347,7 @@ function Card({ r, tema, config, favorito, alternarFavorito, index }) {
 
   const escuro = tema.modoEscuro
   const downloadHref = r.download_url ? `${API_URL}/baixar?url=${encodeURIComponent(r.download_url)}` : ""
-  const descricao = config.mostrarDescricaoCompleta ? r.descricao : limitarTexto(r.descricao, 175)
+  const descricao = limitarTexto(r.descricao, 175)
   const analisado = isSecurityAnalyzed(tagSeg)
   const risco = isSecurityRisk(tagSeg)
 
@@ -686,6 +710,180 @@ function IconButton({ onClick, active, children, tema, label, title }) {
   )
 }
 
+
+function ChipInput({ tema, titulo, descricao, valor, onChange, placeholder, tipo }) {
+  const [texto, setTexto] = useState("")
+  const [selecionado, setSelecionado] = useState(null)
+  const inputChipRef = useRef(null)
+
+  const adicionar = () => {
+    const limpo = normalizarDominioFiltro(texto)
+    if (!dominioFiltroValido(limpo)) return
+    if (!valor.includes(limpo)) onChange([...valor, limpo])
+    setTexto("")
+    setSelecionado(null)
+  }
+
+  const remover = (dom) => {
+    onChange(valor.filter(v => v !== dom))
+    setSelecionado(null)
+  }
+
+  const onKeyDown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault()
+      adicionar()
+      return
+    }
+
+    if ((e.key === "Backspace" || e.key === "Delete") && selecionado) {
+      e.preventDefault()
+      remover(selecionado)
+      return
+    }
+
+    if (e.key === "Backspace" && !texto && valor.length > 0) {
+      e.preventDefault()
+      if (selecionado === valor[valor.length - 1]) remover(selecionado)
+      else setSelecionado(valor[valor.length - 1])
+    }
+  }
+
+  const cor = tipo === "positivo" ? CORES.blue : CORES.red
+
+  return (
+    <div style={{ padding: "13px 0", borderBottom: `1px solid ${tema.border}` }}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: tema.text, marginBottom: 4 }}>
+        {titulo}
+      </div>
+      <div style={{ fontSize: 11.5, color: tema.mutedSoft, lineHeight: 1.45, marginBottom: 9 }}>
+        {descricao}
+      </div>
+
+      <div
+        onClick={() => setSelecionado(null)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 7,
+          minHeight: 42,
+          padding: "7px 9px",
+          border: `1px solid ${tema.border}`,
+          borderRadius: 13,
+          background: tema.input,
+          cursor: "text"
+        }}
+      >
+        {valor.map(dom => {
+          const ativo = selecionado === dom
+          return (
+            <button
+              key={dom}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setSelecionado(ativo ? null : dom)
+                setTimeout(() => inputChipRef.current?.focus(), 0)
+              }}
+              title="Clique e aperte Backspace/Delete para remover"
+              style={{
+                border: `1px solid ${ativo ? cor.text : "transparent"}`,
+                background: tema.modoEscuro ? cor.bgDark : cor.bg,
+                color: tema.modoEscuro ? cor.textDark : cor.text,
+                borderRadius: 999,
+                padding: "6px 10px",
+                fontSize: 12.5,
+                fontWeight: 800,
+                cursor: "pointer"
+              }}
+            >
+              {dom}
+            </button>
+          )
+        })}
+
+        <input
+          ref={inputChipRef}
+          value={texto}
+          onChange={e => {
+            setTexto(e.target.value.toLowerCase())
+            setSelecionado(null)
+          }}
+          onKeyDown={onKeyDown}
+          onBlur={() => { if (dominioFiltroValido(texto)) adicionar() }}
+          placeholder={valor.length ? "" : placeholder}
+          style={{
+            flex: 1,
+            minWidth: 150,
+            border: "none",
+            outline: "none",
+            background: "transparent",
+            color: tema.inputText,
+            fontSize: 13.5,
+            fontWeight: 700,
+            height: 28
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function FiltrosPanel({ tema, filtros, atualizarFiltro }) {
+  return (
+    <section className="filter-panel-mobile" style={{
+      position: "absolute",
+      top: "calc(100% + 12px)",
+      left: 0,
+      width: "min(620px, calc(100vw - 40px))",
+      zIndex: 35,
+      background: tema.card,
+      border: `1px solid ${tema.border}`,
+      borderRadius: 18,
+      padding: "6px 18px 14px",
+      boxShadow: tema.shadowHover,
+      animation: "fadeUp 0.22s ease both"
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, padding: "10px 0 2px" }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 15, color: tema.text }}>Filtros da busca</h3>
+          <p style={{ margin: "4px 0 0", color: tema.mutedSoft, fontSize: 12.2, lineHeight: 1.4 }}>
+            Ajuste o que deve sumir, ou ensine domínios que quer priorizar.
+          </p>
+        </div>
+      </div>
+
+      <Toggle tema={tema} label="Ocultar vídeos, streaming e YouTube" ativo={filtros.semVideo} onClick={() => atualizarFiltro("semVideo", !filtros.semVideo)} />
+      <Toggle tema={tema} label="Ocultar jogos e lojas de jogos" ativo={filtros.semJogos} onClick={() => atualizarFiltro("semJogos", !filtros.semJogos)} />
+      <Toggle tema={tema} label="Ocultar programas/software" ativo={filtros.semSoftware} onClick={() => atualizarFiltro("semSoftware", !filtros.semSoftware)} />
+      <Toggle tema={tema} label="Ocultar PDFs, artigos e documentos" ativo={filtros.semDocumentos} onClick={() => atualizarFiltro("semDocumentos", !filtros.semDocumentos)} />
+      <Toggle tema={tema} label="Ocultar redes sociais e posts" ativo={filtros.semSociais} onClick={() => atualizarFiltro("semSociais", !filtros.semSociais)} />
+      <Toggle tema={tema} label="Mostrar só resultados com sinal de download/link" ativo={filtros.somenteDownload} onClick={() => atualizarFiltro("somenteDownload", !filtros.somenteDownload)} />
+
+      <ChipInput
+        tema={tema}
+        tipo="positivo"
+        titulo="Priorizar domínios"
+        descricao="Ex.: steam.com, archive.org, youtube.com. O backend faz busca direta nesses sites e dá prioridade se aparecerem."
+        valor={filtros.positivos || []}
+        onChange={(lista) => atualizarFiltro("positivos", lista)}
+        placeholder="digite um domínio e pressione Enter"
+      />
+
+      <ChipInput
+        tema={tema}
+        tipo="negativo"
+        titulo="Bloquear domínios"
+        descricao="Ex.: youtube.com. Qualquer resultado desse domínio some da lista."
+        valor={filtros.negativos || []}
+        onChange={(lista) => atualizarFiltro("negativos", lista)}
+        placeholder="digite um domínio e pressione Enter"
+      />
+    </section>
+  )
+}
+
 function EmptyState({ tema }) {
   return (
     <div style={{ textAlign: "center", padding: "8px 20px 4px", animation: "fadeUp 0.5s ease both" }}>
@@ -710,12 +908,14 @@ export default function App() {
     catch { return [] }
   })
   const [mostrarConfig, setMostrarConfig] = useState(false)
+  const [mostrarFiltros, setMostrarFiltros] = useState(false)
   const [mostrarFavoritos, setMostrarFavoritos] = useState(false)
   const [focado, setFocado] = useState(false)
   const inputRef = useRef(null)
 
   const temaBase = TEMAS[config.tema] || TEMAS.claro
   const tema = { ...temaBase, modoEscuro: config.tema === "escuro" }
+  const filtros = { ...DEFAULT_CONFIG.filtros, ...(config.filtros || {}) }
 
   useEffect(() => { localStorage.setItem(CONFIG_KEY, JSON.stringify(config)) }, [config])
   useEffect(() => { localStorage.setItem(FAVORITOS_KEY, JSON.stringify(favoritos)) }, [favoritos])
@@ -725,6 +925,17 @@ export default function App() {
 
   const atualizarConfig = (campo, valor) => setConfig(prev => ({ ...prev, [campo]: valor }))
 
+  const atualizarFiltro = (campo, valor) => {
+    setConfig(prev => ({
+      ...prev,
+      filtros: {
+        ...DEFAULT_CONFIG.filtros,
+        ...(prev.filtros || {}),
+        [campo]: valor
+      }
+    }))
+  }
+
   const voltarInicio = () => {
     setQuery("")
     setResultados([])
@@ -732,6 +943,7 @@ export default function App() {
     setPagina(1)
     setMostrarFavoritos(false)
     setMostrarConfig(false)
+    setMostrarFiltros(false)
     setCarregando(false)
   }
 
@@ -768,7 +980,19 @@ export default function App() {
     setPagina(1)
     setMostrarFavoritos(false)
     try {
-      const res = await axios.get(`${API_URL}/buscar`, { params: { q: query } })
+      const res = await axios.get(`${API_URL}/buscar`, {
+        params: {
+          q: query,
+          sem_video: filtros.semVideo,
+          sem_jogos: filtros.semJogos,
+          sem_software: filtros.semSoftware,
+          sem_documentos: filtros.semDocumentos,
+          sem_sociais: filtros.semSociais,
+          somente_download: filtros.somenteDownload,
+          positivos: (filtros.positivos || []).join(","),
+          negativos: (filtros.negativos || []).join(","),
+        }
+      })
       setResultados(res.data.resultados || [])
     } catch {
       setErro("Não foi possível buscar. Verifique se o backend está rodando.")
@@ -818,6 +1042,7 @@ export default function App() {
           .search-shell { height: auto !important; padding: 12px 14px !important; flex-wrap: wrap; }
           .search-shell input { min-width: 0; height: 42px !important; }
           .search-shell button.buscar { width: 100%; }
+          .filter-panel-mobile { width: auto !important; }
         }
       `}</style>
 
@@ -843,16 +1068,18 @@ export default function App() {
             padding: 0
           }}
         >
-          <img src="/Atchload.png" alt="Atchload" style={{ width: 36, height: 36, objectFit: "contain" }} />
-          <span style={{
-            fontFamily: "'Tilt Neon', sans-serif",
-            fontWeight: 400,
-            fontSize: 22,
-            color: tema.text,
-            letterSpacing: "0.5px"
-          }}>
-            Atchload
-          </span>
+          <img src="/Atchload.png" alt="Atchload" style={{ width: buscou ? 36 : 54, height: buscou ? 36 : 54, objectFit: "contain" }} />
+          {buscou && (
+            <span style={{
+              fontFamily: "'Tilt Neon', sans-serif",
+              fontWeight: 400,
+              fontSize: 22,
+              color: tema.text,
+              letterSpacing: "0.5px"
+            }}>
+              Atchload
+            </span>
+          )}
         </button>
 
         <div className="atch-header-actions" style={{ display: "flex", gap: 8, position: "relative", alignItems: "center" }}>
@@ -877,7 +1104,6 @@ export default function App() {
             }}>
               <Toggle tema={tema} label="Mostrar tags técnicas" ativo={config.mostrarTags} onClick={() => atualizarConfig("mostrarTags", !config.mostrarTags)} />
               <Toggle tema={tema} label="Mostrar motivos do score" ativo={config.mostrarMotivos} onClick={() => atualizarConfig("mostrarMotivos", !config.mostrarMotivos)} />
-              <Toggle tema={tema} label="Mostrar descrição completa" ativo={config.mostrarDescricaoCompleta} onClick={() => atualizarConfig("mostrarDescricaoCompleta", !config.mostrarDescricaoCompleta)} />
               <Toggle tema={tema} label="Mostrar score" ativo={config.mostrarScore} onClick={() => atualizarConfig("mostrarScore", !config.mostrarScore)} />
               <p style={{ fontSize: 11.5, color: tema.mutedSoft, margin: "10px 0 8px", lineHeight: 1.45 }}>
                 Essas preferências ficam salvas neste navegador.
@@ -888,6 +1114,7 @@ export default function App() {
       </header>
 
       <section style={{
+        position: "relative",
         maxWidth: buscou ? 780 : 700,
         margin: buscou ? "44px auto 30px" : "min(22vh, 190px) auto 0",
         transition: "margin 0.35s cubic-bezier(.22,1,.36,1), max-width 0.35s cubic-bezier(.22,1,.36,1)"
@@ -913,7 +1140,8 @@ export default function App() {
           </div>
         )}
 
-        <div className="search-shell" style={{
+        <div style={{ position: "relative" }}>
+          <div className="search-shell" style={{
           display: "flex",
           alignItems: "center",
           gap: 13,
@@ -925,7 +1153,26 @@ export default function App() {
           boxShadow: focado ? `0 0 0 4px ${tema.accentSoft}, ${tema.shadow}` : tema.shadow,
           transition: "border-color 0.18s, box-shadow 0.18s"
         }}>
-          <span style={{ color: focado ? tema.accent : tema.mutedSoft, display: "flex" }}><Icon.search size={19} /></span>
+          <button
+            type="button"
+            onClick={() => setMostrarFiltros(v => !v)}
+            title="Abrir filtros"
+            style={{
+              border: "none",
+              background: mostrarFiltros ? tema.accentSoft : "transparent",
+              color: mostrarFiltros ? tema.accentText : (focado ? tema.accent : tema.mutedSoft),
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 34,
+              height: 34,
+              borderRadius: 999,
+              cursor: "pointer",
+              flexShrink: 0
+            }}
+          >
+            <Icon.sliders size={18} bgFill={mostrarFiltros ? "currentColor" : "none"} />
+          </button>
           <input
             ref={inputRef}
             type="text"
@@ -963,7 +1210,11 @@ export default function App() {
             {carregando ? "Buscando" : "Buscar"}
           </button>
         </div>
-        {!buscou && <EmptyState tema={tema} />}
+
+          {mostrarFiltros && (
+            <FiltrosPanel tema={tema} filtros={filtros} atualizarFiltro={atualizarFiltro} />
+          )}
+        </div>
       </section>
 
       {erro && (

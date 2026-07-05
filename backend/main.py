@@ -511,14 +511,102 @@ def pontuar(r, q, inten, pedidos):
     r["score"], r["motivos"] = max(0, min(int(score), 100)), motivos
     return r
 
+
+# ──────────────────────────────────────────────
+# Filtros controlados pelo usuário
+# positivos: domínios que o usuário quer priorizar e buscar diretamente.
+# negativos: domínios que o usuário quer bloquear.
+# ──────────────────────────────────────────────
+def limpar_dominio_usuario(valor: str) -> str:
+    valor = norm((valor or "").strip())
+    valor = valor.replace("https://", "").replace("http://", "")
+    valor = valor.split("/")[0].split("?")[0].strip()
+    if valor.startswith("www."):
+        valor = valor[4:]
+    return valor
+
+def dominios_csv(valor: str | None):
+    if not valor:
+        return []
+    saida = []
+    for parte in valor.split(","):
+        dom = limpar_dominio_usuario(parte)
+        if dom and "." in dom and dom not in saida:
+            saida.append(dom)
+    return saida
+
+def url_ou_download_tem_ext(r, exts):
+    alvo = f"{r.get('link','')} {r.get('download_url','')}".lower()
+    return any(e in alvo for e in exts)
+
+def passa_filtros_usuario(
+    r,
+    positivos=None,
+    negativos=None,
+    sem_video: bool = False,
+    sem_jogos: bool = False,
+    sem_software: bool = False,
+    sem_documentos: bool = False,
+    sem_sociais: bool = False,
+    somente_download: bool = False,
+):
+    positivos = positivos or []
+    negativos = negativos or []
+    dom = r.get("dominio_limpo", "")
+
+    # Negativo manual sempre vence.
+    if bate(dom, negativos):
+        return False
+
+    # Filtros rápidos por tipo.
+    if sem_video:
+        if r.get("youtube") or r.get("streaming") or url_ou_download_tem_ext(r, [".mp4", ".mkv", ".avi", ".mov", ".mp3", ".flac", ".wav"]):
+            return False
+
+    if sem_jogos:
+        if r.get("loja_jogo") or bate(dom, GAME_STORES):
+            return False
+
+    if sem_software:
+        if (r.get("oficial") and bate(dom, SOFTWARE_OFICIAL)) or any(w in norm(f"{r.get('titulo','')} {r.get('descricao','')}") for w in SOFTWARE_WORDS):
+            return False
+
+    if sem_documentos:
+        if r.get("documento_irrelevante") or bate(dom, ACADEMICOS) or url_ou_download_tem_ext(r, [".pdf", ".epub", ".mobi", ".cbz", ".cbr"]):
+            return False
+
+    if sem_sociais:
+        if r.get("social_link") or r.get("social_ruido") or r.get("social_compartilhamento"):
+            return False
+
+    if somente_download:
+        if not (r.get("download_direto") or r.get("tem_download_na_pagina") or r.get("tem_link_util") or r.get("host_bom")):
+            return False
+
+    return True
+
+def aplicar_boost_filtros(r, positivos):
+    if positivos and bate(r.get("dominio_limpo", ""), positivos):
+        r["score"] = min(100, int(r.get("score", 0)) + 25)
+        r.setdefault("motivos", []).append("+25 filtro positivo do usuário")
+        r["filtro_positivo"] = True
+    else:
+        r["filtro_positivo"] = False
+    return r
+
 # ──────────────────────────────────────────────
 # Busca: consulta ampla + classificação forte.
 # Quanto menos travar a busca em domínio específico, melhor.
 # ──────────────────────────────────────────────
-def montar_queries(q, inten, pedidos):
+def montar_queries(q, inten, pedidos, positivos=None):
     excluir_basico = "-site:wikipedia.org -site:imdb.com -site:adorocinema.com -site:filmow.com -site:letterboxd.com -site:rottentomatoes.com -site:themoviedb.org -site:ucicinemas.com.br -site:ingresso.com -site:cinemark.com.br"
     excluir_docs = "-site:scholar.archive.org -site:scielo.br -site:scielo.org -site:doi.org -site:researchgate.net -site:academia.edu -filetype:pdf"
     qs = []
+    positivos = positivos or []
+
+    if positivos:
+        site_query = " OR ".join(f"site:{d}" for d in positivos)
+        qs.append(f'"{q}" ({site_query})')
 
     if pedidos:
         site_query = " OR ".join(f"site:{d}" for d in pedidos)
@@ -597,14 +685,26 @@ def limitar_dominios(rs):
     return out
 
 @app.get("/buscar")
-def buscar(q: str):
+def buscar(
+    q: str,
+    sem_video: bool = False,
+    sem_jogos: bool = False,
+    sem_software: bool = False,
+    sem_documentos: bool = False,
+    sem_sociais: bool = False,
+    somente_download: bool = False,
+    positivos: str = "",
+    negativos: str = "",
+):
     q = (q or "").strip()
     if not q:
         return {"resultados": []}
     inten, pedidos = intencao(q), sites_pedidos(q)
+    filtros_positivos = dominios_csv(positivos)
+    filtros_negativos = dominios_csv(negativos)
 
     brutos, vistos = [], set()
-    for query in montar_queries(q, inten, pedidos):
+    for query in montar_queries(q, inten, pedidos, filtros_positivos):
         for item in serp(query):
             link = item.get("link", "")
             if link and link not in vistos:
@@ -617,13 +717,40 @@ def buscar(q: str):
         for f in as_completed(futs):
             try:
                 r = pontuar(f.result(), q, inten, pedidos)
-                if visivel(r): resultados.append(r)
+                r = aplicar_boost_filtros(r, filtros_positivos)
+                if visivel(r) and passa_filtros_usuario(
+                    r,
+                    positivos=filtros_positivos,
+                    negativos=filtros_negativos,
+                    sem_video=sem_video,
+                    sem_jogos=sem_jogos,
+                    sem_software=sem_software,
+                    sem_documentos=sem_documentos,
+                    sem_sociais=sem_sociais,
+                    somente_download=somente_download,
+                ):
+                    resultados.append(r)
             except Exception:
                 pass
 
     resultados.sort(key=lambda r: r["score"], reverse=True)
     resultados = limitar_dominios(resultados)
-    return {"query": q, "intencao": inten, "total": len(resultados), "resultados": resultados[:60]}
+    return {
+        "query": q,
+        "intencao": inten,
+        "filtros": {
+            "sem_video": sem_video,
+            "sem_jogos": sem_jogos,
+            "sem_software": sem_software,
+            "sem_documentos": sem_documentos,
+            "sem_sociais": sem_sociais,
+            "somente_download": somente_download,
+            "positivos": filtros_positivos,
+            "negativos": filtros_negativos,
+        },
+        "total": len(resultados),
+        "resultados": resultados[:60]
+    }
 
 @app.get("/verificar")
 def verificar_url(url: str = Query(...)):
