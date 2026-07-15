@@ -4,6 +4,7 @@ import axios from "axios"
 const API_URL = "http://127.0.0.1:8000"
 const CONFIG_KEY = "atchload_config"
 const FAVORITOS_KEY = "atchload_favoritos"
+const USER_KEY = "atchload_usuario_local"
 
 const DEFAULT_CONFIG = {
   tema: "claro",
@@ -177,6 +178,19 @@ const Icon = {
   store: (p = {}) => (
     <svg width={p.size || 12} height={p.size || 12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M4 10h16l-1.2-5H5.2L4 10z" /><path d="M6 10v9h12v-9" /><path d="M9 19v-5h6v5" />
+    </svg>
+  ),
+  user: (p = {}) => (
+    <svg width={p.size || 18} height={p.size || 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4.5 20c1.6-4.1 4.3-6 7.5-6s5.9 1.9 7.5 6" />
+    </svg>
+  ),
+  logout: (p = {}) => (
+    <svg width={p.size || 16} height={p.size || 16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 17l5-5-5-5" />
+      <path d="M15 12H3" />
+      <path d="M21 4v16" />
     </svg>
   ),
 }
@@ -711,6 +725,193 @@ function IconButton({ onClick, active, children, tema, label, title }) {
 }
 
 
+function avatarLabel(usuario) {
+  if (!usuario) return ""
+  const base = usuario.nome || usuario.email || "U"
+  return base.trim().slice(0, 1).toUpperCase()
+}
+
+function UserAvatarButton({ usuario, tema, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      title={usuario ? "Conta local" : "Entrar"}
+      style={{
+        width: 40,
+        height: 40,
+        borderRadius: "50%",
+        border: `1px solid ${active ? tema.accent : tema.border}`,
+        background: usuario ? tema.accentSoft : tema.card,
+        color: usuario ? tema.accentText : tema.muted,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+        boxShadow: tema.shadow,
+        fontWeight: 900,
+        fontSize: 14,
+        overflow: "hidden"
+      }}
+    >
+      {usuario ? avatarLabel(usuario) : <Icon.user size={19} />}
+    </button>
+  )
+}
+
+function UserMenu({ tema, usuario, onEntrar, onRegistrar, onSair, config, atualizarConfig }) {
+  return (
+    <section className="user-panel" style={{
+      position: "absolute",
+      right: 0,
+      top: "calc(100% + 10px)",
+      width: 360,
+      zIndex: 45,
+      background: tema.card,
+      border: `1px solid ${tema.border}`,
+      borderRadius: 18,
+      padding: "14px 18px 8px",
+      boxShadow: tema.shadowHover,
+      animation: "fadeUp 0.22s ease both"
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, paddingBottom: 12, borderBottom: `1px solid ${tema.border}` }}>
+        <div style={{
+          width: 42,
+          height: 42,
+          borderRadius: "50%",
+          background: usuario ? tema.accentSoft : tema.surface,
+          color: usuario ? tema.accentText : tema.muted,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontWeight: 900
+        }}>
+          {usuario ? avatarLabel(usuario) : <Icon.user size={20} />}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 900, color: tema.text }}>
+            {usuario ? (usuario.nome || "Usuário local") : "Você não está logado"}
+          </div>
+          <div style={{ fontSize: 12, color: tema.mutedSoft, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {usuario ? usuario.email : "Conta local apenas para demonstração"}
+          </div>
+        </div>
+      </div>
+
+      {!usuario ? (
+        <div style={{ display: "flex", gap: 8, padding: "12px 0", borderBottom: `1px solid ${tema.border}` }}>
+          <button onClick={onEntrar} style={{ flex: 1, padding: "10px 12px", borderRadius: 11, border: "none", background: tema.button, color: tema.buttonText, fontWeight: 900, cursor: "pointer" }}>
+            Entrar
+          </button>
+          <button onClick={onRegistrar} style={{ flex: 1, padding: "10px 12px", borderRadius: 11, border: `1px solid ${tema.border}`, background: "transparent", color: tema.text, fontWeight: 900, cursor: "pointer" }}>
+            Registrar
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 8, padding: "12px 0", borderBottom: `1px solid ${tema.border}` }}>
+          <button onClick={onRegistrar} style={{ flex: 1, padding: "10px 12px", borderRadius: 11, border: `1px solid ${tema.border}`, background: "transparent", color: tema.text, fontWeight: 900, cursor: "pointer" }}>
+            Trocar conta
+          </button>
+          <button onClick={onSair} style={{ flex: 1, padding: "10px 12px", borderRadius: 11, border: "none", background: tema.surface, color: tema.muted, fontWeight: 900, cursor: "pointer" }}>
+            Sair
+          </button>
+        </div>
+      )}
+
+      <div style={{ paddingTop: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 900, color: tema.text, margin: "8px 0 2px" }}>
+          <Icon.sliders size={14} /> Configurações
+        </div>
+        <Toggle tema={tema} label="Mostrar tags técnicas" ativo={config.mostrarTags} onClick={() => atualizarConfig("mostrarTags", !config.mostrarTags)} />
+        <Toggle tema={tema} label="Mostrar motivos do score" ativo={config.mostrarMotivos} onClick={() => atualizarConfig("mostrarMotivos", !config.mostrarMotivos)} />
+        <Toggle tema={tema} label="Mostrar score" ativo={config.mostrarScore} onClick={() => atualizarConfig("mostrarScore", !config.mostrarScore)} />
+        <p style={{ fontSize: 11.5, color: tema.mutedSoft, margin: "10px 0 4px", lineHeight: 1.45 }}>
+          Login e preferências são salvos apenas neste navegador.
+        </p>
+      </div>
+    </section>
+  )
+}
+
+function AuthModal({ tema, modoInicial, onClose, onSalvar }) {
+  const [modo, setModo] = useState(modoInicial || "login")
+  const [nome, setNome] = useState("")
+  const [email, setEmail] = useState("")
+  const [senha, setSenha] = useState("")
+  const [erro, setErro] = useState("")
+
+  useEffect(() => {
+    setModo(modoInicial || "login")
+    setErro("")
+  }, [modoInicial])
+
+  const confirmar = () => {
+    const emailLimpo = email.trim().toLowerCase()
+    if (!emailLimpo || !emailLimpo.includes("@")) {
+      setErro("Digite um e-mail válido.")
+      return
+    }
+    if (!senha.trim()) {
+      setErro("Digite uma senha.")
+      return
+    }
+    if (modo === "registro" && !nome.trim()) {
+      setErro("Digite seu nome.")
+      return
+    }
+
+    const usuario = {
+      nome: modo === "registro" ? nome.trim() : (nome.trim() || emailLimpo.split("@")[0]),
+      email: emailLimpo,
+      criadoEm: new Date().toISOString(),
+      localDemo: true
+    }
+    onSalvar(usuario)
+  }
+
+  return (
+    <ModalBase tema={tema}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 22 }}>{modo === "registro" ? "Criar conta" : "Entrar"}</h2>
+          <p style={{ margin: "5px 0 0", color: tema.muted, fontSize: 13.5 }}>
+            Demonstração local, sem banco de dados.
+          </p>
+        </div>
+        <button onClick={onClose} style={{ border: "none", background: "transparent", color: tema.muted, cursor: "pointer", fontSize: 22, lineHeight: 1 }}>×</button>
+      </div>
+
+      {modo === "registro" && (
+        <label style={{ display: "block", marginBottom: 10 }}>
+          <span style={{ display: "block", fontSize: 12.5, fontWeight: 800, color: tema.muted, marginBottom: 5 }}>Nome</span>
+          <input value={nome} onChange={e => setNome(e.target.value)} placeholder="Seu nome" style={{ width: "100%", padding: "12px 13px", borderRadius: 12, border: `1px solid ${tema.border}`, background: tema.input, color: tema.inputText, outline: "none", fontWeight: 700 }} />
+        </label>
+      )}
+
+      <label style={{ display: "block", marginBottom: 10 }}>
+        <span style={{ display: "block", fontSize: 12.5, fontWeight: 800, color: tema.muted, marginBottom: 5 }}>E-mail</span>
+        <input value={email} onChange={e => setEmail(e.target.value)} placeholder="exemplo@email.com" style={{ width: "100%", padding: "12px 13px", borderRadius: 12, border: `1px solid ${tema.border}`, background: tema.input, color: tema.inputText, outline: "none", fontWeight: 700 }} />
+      </label>
+
+      <label style={{ display: "block", marginBottom: 10 }}>
+        <span style={{ display: "block", fontSize: 12.5, fontWeight: 800, color: tema.muted, marginBottom: 5 }}>Senha</span>
+        <input type="password" value={senha} onChange={e => setSenha(e.target.value)} placeholder="Senha local de exemplo" onKeyDown={e => e.key === "Enter" && confirmar()} style={{ width: "100%", padding: "12px 13px", borderRadius: 12, border: `1px solid ${tema.border}`, background: tema.input, color: tema.inputText, outline: "none", fontWeight: 700 }} />
+      </label>
+
+      {erro && <p style={{ color: tema.danger, fontSize: 13, fontWeight: 800, margin: "4px 0 10px" }}>{erro}</p>}
+
+      <button onClick={confirmar} style={{ width: "100%", padding: "12px 14px", borderRadius: 12, border: "none", background: tema.button, color: tema.buttonText, fontWeight: 900, cursor: "pointer", marginTop: 6 }}>
+        {modo === "registro" ? "Registrar" : "Entrar"}
+      </button>
+
+      <button onClick={() => { setModo(modo === "registro" ? "login" : "registro"); setErro("") }} style={{ width: "100%", padding: "11px 14px", borderRadius: 12, border: "none", background: "transparent", color: tema.accentText, fontWeight: 900, cursor: "pointer", marginTop: 8 }}>
+        {modo === "registro" ? "Já tenho conta" : "Criar conta local"}
+      </button>
+    </ModalBase>
+  )
+}
+
+
+
 function ChipInput({ tema, titulo, descricao, valor, onChange, placeholder, tipo }) {
   const [texto, setTexto] = useState("")
   const [selecionado, setSelecionado] = useState(null)
@@ -907,7 +1108,10 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem(FAVORITOS_KEY) || "[]") }
     catch { return [] }
   })
-  const [mostrarConfig, setMostrarConfig] = useState(false)
+  const [mostrarUsuarioMenu, setMostrarUsuarioMenu] = useState(false)
+  const [mostrarAuthModal, setMostrarAuthModal] = useState(false)
+  const [authModo, setAuthModo] = useState("login")
+  const [usuario, setUsuario] = useState(() => carregarJSON(USER_KEY, null))
   const [mostrarFiltros, setMostrarFiltros] = useState(false)
   const [mostrarFavoritos, setMostrarFavoritos] = useState(false)
   const [focado, setFocado] = useState(false)
@@ -919,6 +1123,10 @@ export default function App() {
 
   useEffect(() => { localStorage.setItem(CONFIG_KEY, JSON.stringify(config)) }, [config])
   useEffect(() => { localStorage.setItem(FAVORITOS_KEY, JSON.stringify(favoritos)) }, [favoritos])
+  useEffect(() => {
+    if (usuario) localStorage.setItem(USER_KEY, JSON.stringify(usuario))
+    else localStorage.removeItem(USER_KEY)
+  }, [usuario])
   useEffect(() => { document.body.style.background = tema.bg }, [tema.bg])
 
   const favoritosMap = useMemo(() => new Set(favoritos.map(f => f.link)), [favoritos])
@@ -936,13 +1144,30 @@ export default function App() {
     }))
   }
 
+  const abrirAuth = (modo) => {
+    setAuthModo(modo)
+    setMostrarAuthModal(true)
+    setMostrarUsuarioMenu(false)
+  }
+
+  const salvarUsuarioLocal = (dados) => {
+    setUsuario(dados)
+    setMostrarAuthModal(false)
+    setMostrarUsuarioMenu(false)
+  }
+
+  const sairUsuarioLocal = () => {
+    setUsuario(null)
+    setMostrarUsuarioMenu(false)
+  }
+
   const voltarInicio = () => {
     setQuery("")
     setResultados([])
     setErro("")
     setPagina(1)
     setMostrarFavoritos(false)
-    setMostrarConfig(false)
+    setMostrarUsuarioMenu(false)
     setMostrarFiltros(false)
     setCarregando(false)
   }
@@ -1034,11 +1259,11 @@ export default function App() {
         .pulse-dot:nth-child(2) { animation-delay: 0.15s; }
         .pulse-dot:nth-child(3) { animation-delay: 0.3s; }
 
-        .config-panel { position: absolute; right: 0; top: calc(100% + 10px); width: 350px; z-index: 40; }
+        .user-panel { position: absolute; right: 0; top: calc(100% + 10px); width: 360px; z-index: 45; }
         @media (max-width: 720px) {
           .atch-header { align-items: flex-start !important; }
-          .atch-header-actions { position: static !important; }
-          .config-panel { position: fixed !important; top: 78px !important; left: 16px !important; right: 16px !important; width: auto !important; }
+          .atch-header-actions { position: relative !important; }
+          .user-panel { position: fixed !important; top: 78px !important; left: 16px !important; right: 16px !important; width: auto !important; }
           .search-shell { height: auto !important; padding: 12px 14px !important; flex-wrap: wrap; }
           .search-shell input { min-width: 0; height: 42px !important; }
           .search-shell button.buscar { width: 100%; }
@@ -1089,29 +1314,35 @@ export default function App() {
           <IconButton onClick={() => atualizarConfig("tema", config.tema === "claro" ? "escuro" : "claro")} tema={tema} label="" title="Alternar tema">
             {config.tema === "claro" ? <Icon.moon /> : <Icon.sun />}
           </IconButton>
-          <IconButton onClick={() => setMostrarConfig(v => !v)} active={mostrarConfig} tema={tema} label="" title="Configurações">
-            <Icon.sliders bgFill={mostrarConfig ? "currentColor" : "none"} />
-          </IconButton>
+          <UserAvatarButton
+            usuario={usuario}
+            tema={tema}
+            active={mostrarUsuarioMenu}
+            onClick={() => setMostrarUsuarioMenu(v => !v)}
+          />
 
-          {mostrarConfig && (
-            <section className="config-panel" style={{
-              background: tema.card,
-              border: `1px solid ${tema.border}`,
-              borderRadius: 18,
-              padding: "5px 18px",
-              boxShadow: tema.shadowHover,
-              animation: "fadeUp 0.22s ease both"
-            }}>
-              <Toggle tema={tema} label="Mostrar tags técnicas" ativo={config.mostrarTags} onClick={() => atualizarConfig("mostrarTags", !config.mostrarTags)} />
-              <Toggle tema={tema} label="Mostrar motivos do score" ativo={config.mostrarMotivos} onClick={() => atualizarConfig("mostrarMotivos", !config.mostrarMotivos)} />
-              <Toggle tema={tema} label="Mostrar score" ativo={config.mostrarScore} onClick={() => atualizarConfig("mostrarScore", !config.mostrarScore)} />
-              <p style={{ fontSize: 11.5, color: tema.mutedSoft, margin: "10px 0 8px", lineHeight: 1.45 }}>
-                Essas preferências ficam salvas neste navegador.
-              </p>
-            </section>
+          {mostrarUsuarioMenu && (
+            <UserMenu
+              tema={tema}
+              usuario={usuario}
+              config={config}
+              atualizarConfig={atualizarConfig}
+              onEntrar={() => abrirAuth("login")}
+              onRegistrar={() => abrirAuth("registro")}
+              onSair={sairUsuarioLocal}
+            />
           )}
         </div>
       </header>
+
+      {mostrarAuthModal && (
+        <AuthModal
+          tema={tema}
+          modoInicial={authModo}
+          onClose={() => setMostrarAuthModal(false)}
+          onSalvar={salvarUsuarioLocal}
+        />
+      )}
 
       <section style={{
         position: "relative",
