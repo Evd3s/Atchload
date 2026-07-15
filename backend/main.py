@@ -932,3 +932,4 @@ def baixar(url: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Não foi possível baixar: {str(e)}")
 
+
