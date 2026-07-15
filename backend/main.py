@@ -107,6 +107,8 @@ HOSTS_DIRETOS = [
     "archive.org", "pixeldrain.com", "gofile.io", "sourceforge.net", "github.com", "mediafire.com",
     "1fichier.com", "sendspace.com", "workupload.com", "itch.io"
 ]
+# Drive só entra em HOSTS_DIRETOS quando for arquivo individual (tratado em drive_arquivo_link)
+# Mega.nz não entra em HOSTS_DIRETOS pois não expõe download direto por HEAD request
 GAME_STORES = [
     "store.steampowered.com", "steampowered.com", "store.epicgames.com", "epicgames.com", "gog.com",
     "itch.io", "xbox.com", "playstation.com", "nintendo.com", "microsoft.com", "humblebundle.com"
@@ -248,8 +250,19 @@ def ext_perigosa(url):
     return any(p.endswith(e) for e in EXTS_PERIGOSAS)
 
 def drive_pasta(url):
+    """
+    Retorna True SOMENTE para links de PASTA do Drive (não baixáveis diretamente).
+    Links de ARQUIVO (/file/d/...) são permitidos — o usuário pode abrir e baixar.
+    """
     u = url.lower()
-    return "drive.google.com" in u and ("/folders/" in u or ("?usp=sharing" in u and "/file/" not in u))
+    if "drive.google.com" not in u:
+        return False
+    if "/folders/" in u:
+        return True  # pasta — bloqueia
+    if "/file/" in u:
+        return False  # arquivo individual — permite
+    # Outros formatos do Drive sem /file/ e sem /folders/ — trata como pasta por segurança
+    return True
 
 def archive_details(url): return "archive.org/details/" in url.lower()
 def archive_download(url): return "archive.org/download/" in url.lower()
@@ -269,6 +282,23 @@ def ads_e_links(url):
         return prop, any(norm(w) in html for w in LINK_WORDS)
     except Exception:
         return "desconhecido", False
+
+def github_existe(url):
+    """
+    Retorna False se o repositório do GitHub retornar 404.
+    Só faz a requisição se a URL parecer um repositório específico
+    (tem pelo menos /user/repo no caminho).
+    """
+    try:
+        p = urlparse(url).path.strip("/")
+        partes = [x for x in p.split("/") if x]
+        # Se não tiver pelo menos user/repo, confia sem verificar
+        if len(partes) < 2:
+            return True
+        r = requests.head(url, timeout=4, allow_redirects=True, headers=HEADERS)
+        return r.status_code != 404
+    except Exception:
+        return True  # em caso de erro de rede, não penaliza
 
 def head_arquivo(url):
     if drive_pasta(url): return False
@@ -302,11 +332,20 @@ def arquivo_archive(url, q):
     except Exception:
         return None
 
+def drive_arquivo_link(url):
+    """Retorna True se for link direto para um arquivo no Google Drive (/file/d/...)."""
+    u = url.lower()
+    return "drive.google.com" in u and "/file/" in u
+
 def download_url(link, dom, q):
     if not link.startswith("http") or ext_perigosa(link): return None
     if archive_details(link): return arquivo_archive(link, q)
     if archive_download(link) and head_arquivo(link): return link
-    if "drive.google.com" in dom: return None
+    # Drive: pasta bloqueia, arquivo individual mantém o link para o usuário abrir
+    if "drive.google.com" in dom:
+        if drive_arquivo_link(link):
+            return link  # retorna o link do Drive — usuário abre e baixa lá
+        return None  # pasta — não tem download direto
     if bate(dom, SOCIAL_LINK) or bate(dom, SOCIAL_RUIDO): return None
     if (bate(dom, HOSTS_DIRETOS) or tem_ext(link)) and head_arquivo(link): return link
     return None
@@ -329,8 +368,13 @@ def documento_irrelevante(dom, texto, inten):
         return True
     if any(w in tx for w in ["scholar", "scielo", "doi", "artigo", "paper", "resumo", "journal"]):
         return True
-    # PDF pode ser útil para documento/livro, mas para filme/jogo/software geralmente vira ruído.
-    if inten in ["media", "jogo", "software"] and (".pdf" in tx or "/pdf" in tx):
+    # PDF é ruído para qualquer busca que não seja documento.
+    # Inclui "geral" — um PDF do Archive com menção casual ao nome pesquisado não deve rankear alto.
+    if inten in ["media", "jogo", "software", "geral", "download"] and (".pdf" in tx or "/pdf" in tx or "_djvu" in tx):
+        return True
+    # URL de texto/djvu do Archive é quase sempre conteúdo acadêmico ou livro antigo — bloqueia.
+    lnk = norm(dom + texto)
+    if "archive.org" in lnk and any(x in lnk for x in ["_djvu.txt", "magazine", "journal", "dragon_magazine"]):
         return True
     return False
 
@@ -352,6 +396,14 @@ def classificar(item, q, inten, pedidos):
     social_ruido = bate(dom, SOCIAL_RUIDO)
     host = bate(dom, HOSTS_ARQUIVO)
     game_store = bate(dom, GAME_STORES)
+
+    # GitHub com 404 não deve receber bônus de hospedagem.
+    github_ok = True
+    if bate(dom, ["github.com"]):
+        github_ok = github_existe(link)
+        if not github_ok:
+            host = False  # tira o bônus de host
+
     oficial = parece_oficial_generico(q, dom, texto) or game_store
     bloqueado = bate(dom, BLOQUEADOS_GERAIS)
     encurtador = bate(dom, ENCURTADORES)
@@ -395,6 +447,7 @@ def classificar(item, q, inten, pedidos):
         "social_link": social, "social_compartilhamento": social and util,
         "social_ruido": social_ruido,
         "host_bom": host, "tem_link_util": util, "tem_download_na_pagina": util and not bool(durl),
+        "github_404": bate(dom, ["github.com"]) and not github_ok,
         "encurtador": encurtador, "bloqueado": bloqueado, "trailer": trailer,
         "cinema": cinema, "documento_irrelevante": doc_ruim,
         "catalogo": bloqueado or doc_ruim,
@@ -410,11 +463,15 @@ def classificar(item, q, inten, pedidos):
 def teto(score, r, inten, site_pedido, q):
     if r["bloqueado"] or r["cinema"] or r["trailer"] or r["documento_irrelevante"]:
         return 0
+    if r.get("github_404"): return min(score, 10)
     if r["encurtador"]: return min(score, 35)
 
-    # Oficiais/lojas devem vencer buscas gerais de software/jogo.
+    # Loja de jogo: sempre piso alto, independente da intenção detectada.
+    # O usuário pode não ter escrito "jogo" mas pesquisou o nome de um jogo.
     if r["loja_jogo"]:
-        return min(max(score, 82), 96)
+        return min(max(score, 84), 96)
+
+    # Oficial: piso alto para software/jogo/geral.
     if r["oficial"]:
         return min(max(score, 84), 97) if inten in ["software", "jogo", "download", "geral", "documento"] else min(max(score, 50), 68)
 
@@ -473,6 +530,7 @@ def pontuar(r, q, inten, pedidos):
     elif r["propaganda"] == "agressivo": score -= 12; motivos.append("-12 muitos anúncios")
 
     if r["encurtador"]: score -= 20; motivos.append("-20 encurtador")
+    if r.get("github_404"): score -= 60; motivos.append("-60 GitHub 404")
     if pedidos:
         score += 20 if site_pedido else -8
         motivos.append("site pedido" if site_pedido else "outro site")
@@ -599,53 +657,86 @@ def aplicar_boost_filtros(r, positivos):
 # Quanto menos travar a busca em domínio específico, melhor.
 # ──────────────────────────────────────────────
 def montar_queries(q, inten, pedidos, positivos=None):
-    excluir_basico = "-site:wikipedia.org -site:imdb.com -site:adorocinema.com -site:filmow.com -site:letterboxd.com -site:rottentomatoes.com -site:themoviedb.org -site:ucicinemas.com.br -site:ingresso.com -site:cinemark.com.br"
-    excluir_docs = "-site:scholar.archive.org -site:scielo.br -site:scielo.org -site:doi.org -site:researchgate.net -site:academia.edu -filetype:pdf"
+    # Ruído que nunca ajuda — exclui em todas as queries
+    excluir_sempre = (
+        "-site:wikipedia.org -site:imdb.com -site:adorocinema.com -site:filmow.com "
+        "-site:letterboxd.com -site:rottentomatoes.com -site:themoviedb.org "
+        "-site:ucicinemas.com.br -site:ingresso.com -site:cinemark.com.br "
+        "-site:scholar.archive.org -site:scielo.br -site:scielo.org "
+        "-site:doi.org -site:researchgate.net -site:academia.edu"
+    )
     qs = []
     positivos = positivos or []
 
+    # ── 0. Sites pedidos explicitamente pelo usuário — máxima prioridade ──
     if positivos:
-        site_query = " OR ".join(f"site:{d}" for d in positivos)
-        qs.append(f'"{q}" ({site_query})')
+        site_q = " OR ".join(f"site:{d}" for d in positivos)
+        qs.append(f'"{q}" ({site_q})')
 
     if pedidos:
-        site_query = " OR ".join(f"site:{d}" for d in pedidos)
-        qs.append(f'"{q}" ({site_query})')
+        site_q = " OR ".join(f"site:{d}" for d in pedidos)
+        qs.append(f'"{q}" ({site_q})')
 
-    # 1) Busca oficial ampla. Resolve casos como Visual Studio sem precisar escrever o resultado na mão.
-    qs.append(f'"{q}" (official OR oficial) (download OR downloads OR site OR store OR loja)')
-
-    # 2) Plataformas conhecidas por categoria, mas sem forçar título específico.
+    # ── 1. Oficial/loja — uma única query ampla por intenção ──
     if inten in ["jogo", "geral", "download"]:
-        qs.append(f'"{q}" (site:store.steampowered.com OR site:store.epicgames.com OR site:gog.com OR site:itch.io OR site:nintendo.com OR site:xbox.com OR site:playstation.com OR site:microsoft.com)')
-        qs.append(f'"{q}" (download OR baixar OR "pc download") {excluir_basico} {excluir_docs}')
-
+        qs.append(
+            f'"{q}" (site:store.steampowered.com OR site:gog.com OR site:itch.io '
+            f'OR site:store.epicgames.com OR site:nintendo.com OR site:xbox.com '
+            f'OR site:playstation.com OR official OR oficial)'
+        )
     if inten in ["software", "geral", "download"]:
-        qs.append(f'"{q}" (site:microsoft.com OR site:visualstudio.microsoft.com OR site:code.visualstudio.com OR site:github.com OR site:sourceforge.net)')
-        qs.append(f'"{q}" (download OR baixar OR installer OR setup) {excluir_basico} {excluir_docs}')
+        qs.append(
+            f'"{q}" (official OR oficial OR download OR installer) '
+            f'(site:github.com OR site:sourceforge.net OR site:microsoft.com '
+            f'OR site:code.visualstudio.com)'
+        )
 
+    # ── 2. Google Drive público — busca direta por arquivos compartilhados ──
+    # Busca o arquivo pelo nome dentro do Drive sem forçar pasta específica.
+    qs.append(f'"{q}" site:drive.google.com')
+
+    # ── 3. Archive.org — acervo de mídias antigas e software ──
+    qs.append(f'"{q}" site:archive.org -site:scholar.archive.org')
+
+    # ── 4. Hospedagens de arquivo — uma query unificada ──
+    qs.append(
+        f'"{q}" (site:mediafire.com OR site:mega.nz OR site:pixeldrain.com '
+        f'OR site:gofile.io OR site:1fichier.com OR site:sendspace.com '
+        f'OR site:workupload.com)'
+    )
+
+    # ── 5. Posts em redes sociais com link de download ──
+    qs.append(
+        f'"{q}" (download OR baixar OR "google drive" OR mega OR mediafire OR pixeldrain) '
+        f'(site:x.com OR site:twitter.com OR site:reddit.com)'
+    )
+
+    # ── 6. YouTube — só para mídia ──
     if inten == "media":
-        # Não exclui streaming aqui; deixa aparecer, mas o score coloca em faixa correta.
-        qs.append(f'"{q}" (assistir OR streaming OR watch OR youtube) {excluir_basico} {excluir_docs}')
-        qs.append(f'"{q}" site:youtube.com -trailer')
-        qs.append(f'"{q}" site:archive.org -site:scholar.archive.org')
-    else:
-        qs.append(f'"{q}" site:archive.org -site:scholar.archive.org')
+        qs.append(f'"{q}" site:youtube.com -trailer -teaser')
 
-    # 3) Hospedagens e posts. Não vira download direto automaticamente; só vira achado útil.
-    qs.append(f'"{q}" (site:mediafire.com OR site:mega.nz OR site:drive.google.com OR site:pixeldrain.com OR site:gofile.io OR site:sourceforge.net OR site:itch.io)')
-    qs.append(f'"{q}" (download OR baixar OR "google drive" OR mega OR mediafire) (site:x.com OR site:twitter.com OR site:reddit.com)')
-
-    # 4) Busca geral final com filtros de ruído.
-    if inten in ["media", "jogo", "software"]:
-        qs.append(f'"{q}" {excluir_basico} {excluir_docs}')
+    # ── 7. DESCOBERTA ABERTA — sem site: nenhum, pega tudo que o Google achar ──
+    # Esta é a query que vai achar sites desconhecidos com o conteúdo certo.
+    # Dois formatos: um com aspas (mais preciso) e um sem (mais amplo).
+    if inten == "media":
+        qs.append(f'"{q}" (download OR baixar OR assistir OR watch) {excluir_sempre}')
+        qs.append(f'{q} download filme completo OR assistir gratis {excluir_sempre}')
+    elif inten == "jogo":
+        qs.append(f'"{q}" (download OR baixar OR "pc game" OR rom OR iso) {excluir_sempre}')
+        qs.append(f'{q} download gratis pc OR rom OR iso {excluir_sempre}')
+    elif inten == "software":
+        qs.append(f'"{q}" (download OR baixar OR installer OR setup OR gratis) {excluir_sempre}')
+    elif inten == "documento":
+        qs.append(f'"{q}" (download OR baixar OR pdf OR epub OR ebook) {excluir_sempre}')
     else:
-        qs.append(f'{q} download OR baixar {excluir_basico}')
+        qs.append(f'"{q}" (download OR baixar) {excluir_sempre}')
+        qs.append(f'{q} download OR baixar {excluir_sempre}')
 
     # Remove duplicadas mantendo ordem.
     out = []
     for x in qs:
-        if x not in out: out.append(x)
+        if x not in out:
+            out.append(x)
     return out
 
 def serp(query, num=10):
@@ -662,6 +753,8 @@ def serp(query, num=10):
 
 def visivel(r):
     if r["score"] <= 0 or r["bloqueado"] or r["trailer"] or r["cinema"] or r["documento_irrelevante"]:
+        return False
+    if r.get("github_404"):
         return False
     if r["social_ruido"] and r["score"] < 45:
         return False
